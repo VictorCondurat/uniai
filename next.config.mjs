@@ -1,6 +1,5 @@
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {
+// next.config.mjs
+const nextConfig = {
     eslint: {
         ignoreDuringBuilds: true,
     },
