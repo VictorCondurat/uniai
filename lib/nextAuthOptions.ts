@@ -1,0 +1,149 @@
+import GoogleProvider from "next-auth/providers/google"
+import CredentialsProvider from "next-auth/providers/credentials"
+import { PrismaAdapter } from "@auth/prisma-adapter"
+import { prisma } from "@/lib/prisma"
+import type { NextAuthOptions } from "next-auth"
+import { compare } from "bcryptjs"
+
+export const authOptions: NextAuthOptions = {
+    adapter: PrismaAdapter(prisma),
+    session: {
+        strategy: "jwt",
+        maxAge: 30 * 24 * 60 * 60, // 30 days
+    },
+    providers: [
+        GoogleProvider({
+            clientId: process.env.GOOGLE_CLIENT_ID!,
+            clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+            profile(profile) {
+                return {
+                    id: profile.sub,
+                    name: profile.name,
+                    email: profile.email,
+                    image: profile.picture,
+                    role: "user",
+                    verified: true,
+                };
+            },
+        }),
+        CredentialsProvider({
+            name: "Credentials",
+            credentials: {
+                email: { label: "Email", type: "email" },
+                password: { label: "Password", type: "password" }
+            },
+            async authorize(credentials) {
+                if (!credentials?.email || !credentials?.password) {
+                    throw new Error("Email and password are required");
+                }
+
+                const user = await prisma.user.findUnique({
+                    where: { email: credentials.email }
+                });
+
+                if (!user || !user.password) {
+                    throw new Error("Invalid email or password");
+                }
+
+                const isPasswordValid = await compare(credentials.password, user.password);
+
+                if (!isPasswordValid) {
+                    throw new Error("Invalid email or password");
+                }
+
+                if (!user.verified) {
+                    throw new Error("Please verify your email before signing in");
+                }
+
+                return {
+                    id: user.id,
+                    email: user.email,
+                    name: user.name,
+                    image: user.image,
+                    role: user.role
+                };
+            }
+        })
+    ],
+    callbacks: {
+        async signIn({ user, account, profile }) {
+            if (account?.provider === "credentials") {
+                return true;
+            }
+
+            if (account?.provider === "google" && user.email) {
+                const existingUser = await prisma.user.findUnique({
+                    where: { email: user.email },
+                    include: { accounts: true },
+                });
+
+                if (existingUser) {
+                    const linkedAccount = await prisma.account.findFirst({
+                        where: {
+                            userId: existingUser.id,
+                            provider: "google",
+                        }
+                    });
+
+                    if (!linkedAccount) {
+                        await prisma.account.create({
+                            data: {
+                                userId: existingUser.id,
+                                type: account.type,
+                                provider: account.provider,
+                                providerAccountId: account.providerAccountId,
+                                access_token: account.access_token,
+                                expires_at: account.expires_at,
+                                token_type: account.token_type,
+                                scope: account.scope,
+                                id_token: account.id_token,
+                            },
+                        });
+                    }
+
+                    if (!existingUser.verified) {
+                        await prisma.user.update({
+                            where: { id: existingUser.id },
+                            data: { verified: true },
+                        });
+                    }
+
+                    return true;
+                } else {
+                    await prisma.user.create({
+                        data: {
+                            email: user.email,
+                            name: user.name,
+                            image: user.image,
+                            verified: true,
+                            role: "user",
+                        },
+                    });
+                }
+            }
+            return true;
+        },
+        async jwt({ token, user }) {
+            if (user) {
+                token.userId = user.id;
+                token.email = user.email;
+                token.role = (user as any).role || "user";
+            }
+            return token;
+        },
+        async session({ session, token }) {
+            if (session.user) {
+                session.user.id = token.userId as string;
+                session.user.role = token.role as string;
+            }
+            return session;
+        },
+    },
+    pages: {
+        signIn: "/login",
+        newUser: "/dashboard",
+        error: "/login",
+    },
+    debug: process.env.NODE_ENV === "development",
+};
+
