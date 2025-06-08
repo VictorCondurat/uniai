@@ -3,6 +3,7 @@ import { authMiddleware } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { sendInvoiceEmail } from '@/lib/email';
 import { generateInvoicePDF } from '@/lib/pdf';
+import { gatherUsageDataForInvoice, formatInvoiceData } from '@/lib/invoice-data';
 
 export async function POST(request: NextRequest) {
     try {
@@ -12,16 +13,52 @@ export async function POST(request: NextRequest) {
         }
 
         const body = await request.json();
-        const { invoiceData, sendEmail = true, saveToDatabase = true } = body;
+        const { invoiceData, sendEmail = true, saveToDatabase = true, period, clientInfo } = body;
 
-        if (!invoiceData) {
+        let finalInvoiceData = invoiceData;
+
+        if (!invoiceData && period) {
+            const lineItems = await gatherUsageDataForInvoice(
+                prisma,
+                user.id,
+                {
+                    start: new Date(period.start),
+                    end: new Date(period.end)
+                }
+            );
+
+            if (lineItems.length === 0) {
+                return NextResponse.json(
+                    { error: 'No usage data found for the specified period' },
+                    { status: 400 }
+                );
+            }
+
+            const client = clientInfo || {
+                name: user.name || 'N/A',
+                email: user.email,
+                country: 'Romania'
+            };
+
+            finalInvoiceData = formatInvoiceData(
+                user,
+                client,
+                lineItems,
+                {
+                    start: new Date(period.start),
+                    end: new Date(period.end)
+                }
+            );
+        }
+
+        if (!finalInvoiceData) {
             return NextResponse.json(
                 { error: 'Invoice data is required' },
                 { status: 400 }
             );
         }
 
-        const pdfBuffer = await generateInvoicePDF(invoiceData);
+        const pdfBuffer = await generateInvoicePDF(finalInvoiceData);
 
         if (!pdfBuffer) {
             return NextResponse.json(
@@ -34,7 +71,7 @@ export async function POST(request: NextRequest) {
         let invoiceRecord = null;
 
         if (sendEmail) {
-            emailResult = await sendInvoiceEmail(invoiceData, pdfBuffer);
+            emailResult = await sendInvoiceEmail(finalInvoiceData, pdfBuffer);
 
             if (!emailResult.success) {
                 return NextResponse.json(
@@ -48,30 +85,29 @@ export async function POST(request: NextRequest) {
             invoiceRecord = await prisma.invoice.create({
                 data: {
                     userId: user.id,
-                    invoiceNumber: invoiceData.invoiceNumber,
-                    amount: invoiceData.summary.total,
-                    subtotal: invoiceData.summary.subtotal,
-                    vatAmount: invoiceData.summary.vatAmount,
-                    markupAmount: invoiceData.summary.markupAmount,
-                    currency: invoiceData.currency,
-                    status: 'SENT',
-                    issueDate: new Date(invoiceData.issueDate),
-                    dueDate: new Date(invoiceData.dueDate),
-                    periodStart: new Date(invoiceData.period.start),
-                    periodEnd: new Date(invoiceData.period.end),
-                    details: invoiceData,
+                    invoiceNumber: finalInvoiceData.invoiceNumber,
+                    amount: finalInvoiceData.summary.total,
+                    subtotal: finalInvoiceData.summary.subtotal,
+                    vatAmount: finalInvoiceData.summary.vatAmount,
+                    markupAmount: finalInvoiceData.summary.markupAmount,
+                    currency: finalInvoiceData.currency,
+                    status: 'pending',
+                    issueDate: new Date(finalInvoiceData.issueDate),
+                    dueDate: new Date(finalInvoiceData.dueDate),
+                    periodStart: new Date(finalInvoiceData.period.start),
+                    periodEnd: new Date(finalInvoiceData.period.end),
+                    details: finalInvoiceData,
                     emailSent: sendEmail,
                     emailId: emailResult?.data?.id || null,
                 },
             });
-
         }
 
         return NextResponse.json({
             success: true,
             message: 'Invoice processed successfully',
             data: {
-                invoiceNumber: invoiceData.invoiceNumber,
+                invoiceNumber: finalInvoiceData.invoiceNumber,
                 emailSent: sendEmail ? emailResult?.success : false,
                 invoiceId: invoiceRecord?.id,
                 pdfGenerated: true,
@@ -86,6 +122,7 @@ export async function POST(request: NextRequest) {
         );
     }
 }
+
 
 export async function GET(request: NextRequest) {
     try {

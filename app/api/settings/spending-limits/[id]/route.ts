@@ -24,10 +24,10 @@ export async function DELETE(
         await prisma.project.update({
             where: {
                 id: params.id,
-                userId: user.id,
+                ownerId: user.id,
             },
             data: {
-                spendingLimit: null,
+                totalSpendingLimit: null,
             },
         });
 

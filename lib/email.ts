@@ -345,6 +345,69 @@ function getTopModels(items: InvoiceData['items']): ItemBreakdown[] {
     return Object.values(modelStats).sort((a, b) => b.tokens - a.tokens);
 }
 
+export async function sendProjectInviteEmail({
+                                                 toEmail,
+                                                 inviterName,
+                                                 projectName,
+                                                 projectRole,
+                                                 projectId,
+                                             }: {
+    toEmail: string;
+    inviterName: string;
+    projectName: string;
+    projectRole: string;
+    projectId: string;
+}) {
+    try {
+        const fromEmail = process.env.FROM_EMAIL && process.env.FROM_EMAIL !== 'noreply@yourdomain.com'
+            ? `UniAI <${process.env.FROM_EMAIL}>`
+            : 'UniAI <onboarding@resend.dev>';
+
+        const projectUrl = `${process.env.NEXTAUTH_URL}/projects/${projectId}/dashboard`;
+
+        const { data, error } = await resend.emails.send({
+            from: fromEmail,
+            to: [toEmail],
+            subject: `You've been invited to the project "${projectName}" on UniAI`,
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                    <h1 style="color: #2563eb; text-align: center; margin-bottom: 20px;">You're invited!</h1>
+                    <div style="background-color: #f8fafc; padding: 30px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                        <h2 style="margin-top: 0; color: #1a202c;">You've been added to a project</h2>
+                        <p style="color: #4a5568; line-height: 1.6;">Hi there,</p>
+                        <p style="color: #4a5568; line-height: 1.6;">
+                            <strong>${inviterName}</strong> has invited you to join the project "<strong>${projectName}</strong>" on UniAI with the role of <strong>${projectRole}</strong>.
+                        </p>
+                        <p style="color: #4a5568; line-height: 1.6;">You can now access the project dashboard and start collaborating with your team.</p>
+                        <div style="text-align: center; margin: 40px 0;">
+                            <a href="${projectUrl}" 
+                               style="background-color: #2563eb; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">
+                                Go to Project Dashboard
+                            </a>
+                        </div>
+                        <div style="border-top: 1px solid #e2e8f0; padding-top: 20px; margin-top: 30px;">
+                            <p style="color: #6b7280; font-size: 14px; margin: 0;">
+                                If you have any questions, please contact the project owner or your team leader.
+                            </p>
+                        </div>
+                    </div>
+                    <div style="text-align: center; color: #9ca3af; font-size: 12px; margin-top: 40px;">
+                        <p>© ${new Date().getFullYear()} UniAI. All rights reserved.</p>
+                    </div>
+                </div>
+            `,
+        });
+
+        if (error) {
+            console.error('Error sending project invite email:', error);
+            return { success: false, error };
+        }
+        return { success: true, data };
+    } catch (error) {
+        console.error('Failed to send project invite email:', error);
+        return { success: false, error };
+    }
+}
 export async function sendHighUsageAlert(email: string, currentCost: number, limit: number, userName?: string) {
     try {
         const fromEmail = `UniAI Alerts <${process.env.FROM_EMAIL}>`;

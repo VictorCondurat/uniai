@@ -8,8 +8,6 @@ export async function POST(req: NextRequest) {
         return authResult;
     }
 
-    const user = authResult;
-
     try {
         const body = await req.json();
         const { webhookUrl } = body;
@@ -49,7 +47,7 @@ export async function POST(req: NextRequest) {
                 status: response.status,
                 message: 'Webhook test successful'
             });
-        } catch (fetchError) {
+        } catch (error) {
             return NextResponse.json(
                 {
                     success: false,

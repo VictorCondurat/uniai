@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { ALL_MODELS_CONFIG, ALL_PROVIDERS_CONFIG } from '@/lib/modelsConfig';
+import { auditHelpers } from '@/lib/audit';
+import { AUDIT_ACTIONS } from '@/types/audit';
+interface ModelPerformanceAPI {
+    speed: number;
+    cost: number;
+    quality: number;
+    label: string;
+}
 
 interface ModelAPI {
     id: string;
@@ -9,7 +17,8 @@ interface ModelAPI {
     capabilities: string[];
     contextWindow?: string | null;
     pricing?: string | null;
-    status: 'available' | 'beta' | 'deprecated' | 'restricted';
+    status: 'available' | 'beta' | 'deprecated' | 'restricted' | 'preview';
+    performance: ModelPerformanceAPI;
 }
 
 interface ModelProviderAPI {
@@ -21,37 +30,50 @@ interface ModelProviderAPI {
 
 export async function GET(request: NextRequest) {
     try {
-        const providersWithModels = await prisma.modelProviderInfo.findMany({
-            include: {
-                models: {
-                    orderBy: { order: 'asc' },
-                },
+        const startTime = Date.now();
+        const formattedData: ModelProviderAPI[] = ALL_PROVIDERS_CONFIG
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map(providerConfig => {
+                const modelsForProvider = ALL_MODELS_CONFIG
+                    .filter(modelConfig => modelConfig.providerId === providerConfig.providerId)
+                    .sort((a, b) => a.displayOrder - b.displayOrder)
+                    .map(modelConfig => {
+                        return {
+                            id: modelConfig.modelIdentifier,
+                            name: modelConfig.name,
+                            provider: providerConfig.providerId,
+                            description: modelConfig.description,
+                            capabilities: modelConfig.capabilities,
+                            contextWindow: modelConfig.contextWindow,
+                            pricing: `Input: $${modelConfig.inputCostPerMillionTokens.toFixed(2)}/M, Output: $${modelConfig.outputCostPerMillionTokens.toFixed(2)}/M`,
+                            status: modelConfig.status as ModelAPI['status'],
+                            performance: modelConfig.performance,
+                        };
+                    });
+                return {
+                    id: providerConfig.providerId,
+                    name: providerConfig.name,
+                    icon: providerConfig.iconUrl,
+                    models: modelsForProvider,
+                };
+            });
+
+        const totalModels = formattedData.reduce((sum, provider) => sum + provider.models.length, 0);
+        await auditHelpers.logUserAction(
+            'anonymous',
+            AUDIT_ACTIONS.ROUTE_ACCESSED,
+            {
+                action: 'models_list_viewed',
+                providersCount: formattedData.length,
+                totalModels,
+                duration: Date.now() - startTime,
             },
-            orderBy: { name: 'asc' },
-        });
-
-        if (!providersWithModels || providersWithModels.length === 0) {
-            return NextResponse.json([]);
-        }
-
-        const formattedData: ModelProviderAPI[] = providersWithModels.map(p => ({
-            id: p.providerId,
-            name: p.name,
-            icon: p.iconUrl,
-            models: p.models.map(m => ({
-                id: m.modelIdentifier,
-                name: m.name,
-                provider: p.providerId,
-                description: m.description,
-                capabilities: m.capabilities,
-                contextWindow: m.contextWindow,
-                pricing: m.pricingInfo,
-                status: m.status as ModelAPI['status'],
-            })),
-        }));
-
+            request
+        );
         return NextResponse.json(formattedData);
+
     } catch (error) {
+        console.error("Error constructing models response from local config:", error);
         return NextResponse.json({ error: "An error occurred while fetching available models. Please try again later." }, { status: 500 });
     }
 }

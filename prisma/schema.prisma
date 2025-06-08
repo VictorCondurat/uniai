@@ -8,30 +8,75 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+enum ProjectRole {
+  OWNER
+  ADMIN
+  MEMBER
+  BILLING
+  VIEWER
+}
+
 model User {
-  id                     String       @id @default(cuid())
-  email                  String       @unique
+  id                     String    @id @default(cuid())
+  email                  String    @unique
   password               String?
   name                   String?
-  role                   String       @default("user") // "admin", "user", etc.
+  role                   String    @default("user")
   image                  String?
-  verified               Boolean      @default(false)
+  verified               Boolean   @default(false)
   verificationCode       String?
   verificationCodeExpiry DateTime?
-  createdAt              DateTime     @default(now())
-  updatedAt              DateTime     @updatedAt
-  projects               Project[]
-  accounts               Account[]
-  sessions               Session[]
-  apiKeys                ApiKey[]
-  usage                  Usage[]
-  invoices               Invoice[]
-  alerts                 Alert[]
-  auditLogs              AuditLog[]
-  costAlerts             CostAlert[]
-  autoModelEnabled       Boolean      @default(false)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  ownedProjects Project[]       @relation("OwnedProjects")
+  memberships   ProjectMember[]
+
+  accounts         Account[]
+  sessions         Session[]
+  apiKeys          ApiKey[]
+  usage            Usage[]
+  invoices         Invoice[]
+  alerts           Alert[]
+  auditLogs        AuditLog[]
+  costAlerts       CostAlert[]
+  autoModelEnabled Boolean         @default(false)
+  fallbackChains   FallbackChain[]
+  sentInvitations ProjectInvitation[]
 
   @@map("users")
+}
+
+model ProjectMember {
+  id        String      @id @default(cuid())
+  projectId String
+  project   Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      ProjectRole @default(MEMBER)
+  permissions Json?     // e.g., { "keys": ["read", "create"], "billing": ["read"] }
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}
+
+model ProjectInvitation {
+  id          String      @id @default(cuid())
+  email       String
+  projectId   String
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  role        ProjectRole
+  permissions Json?
+  token       String      @unique
+  expires     DateTime
+  invitedById String
+  invitedBy   User        @relation(fields: [invitedById], references: [id])
+  createdAt   DateTime    @default(now())
+
+  @@unique([email, projectId])
+  @@map("project_invitations")
 }
 
 model Account {
@@ -65,76 +110,139 @@ model Session {
 }
 
 model Project {
-  id            String   @id @default(cuid())
-  name          String
-  userId        String
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade) // FIXED THIS
-  spendingLimit Float?
-  description   String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id          String  @id @default(cuid())
+  name        String
+  description String?
 
-  apiKeys     ApiKey[]
-  usage       Usage[]
-  modelChains ModelChain[]
+  ownerId       String
+  owner         User   @relation("OwnedProjects", fields: [ownerId], references: [id], onDelete: Cascade)
+  totalSpendingLimit Float?
 
+  members ProjectMember[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tags          String[]  @default([])
+  allowedModels     String[] @default([]) // Optional array to override API key model settings.
+  defaultFallbackChainId String? // ID of the fallback chain to use by default for this project.
+
+  apiKeys        ApiKey[]
+  usage          Usage[]
+  fallbackChains FallbackChain[]
+  invitations ProjectInvitation[]
   @@map("projects")
 }
 
 model ApiKey {
-  id               String    @id @default(cuid())
-  key              String    @unique
-  name             String
-  userId           String?
-  user             User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  projectId        String?
-  project          Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  active           Boolean   @default(true)
-  created          DateTime  @default(now())
-  expires          DateTime?
-  lastUsed         DateTime?
-  usageLimit       Float? // Monthly spending limit
-  killSwitchActive Boolean   @default(false)
-  permissions      String[]
-  ipWhitelist      String[]
-  models           String[]
-  metadata         Json?
-  usage            Usage[]
-  webhookUrl       String?
+  id    String @id @default(cuid())
+  name  String
 
+
+  hashedKey String @unique
+  keyPrefix String
+
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  active    Boolean   @default(true)
+  revokedAt DateTime?
+
+  created   DateTime  @default(now())
+  expires   DateTime?
+  lastUsed  DateTime?
+
+  totalUsageLimit   Float?
+  monthlyUsageLimit Float?
+  dailyUsageLimit   Float?
+
+  maxCostPerRequest Float?
+  rateLimitConfig   Json?
+
+  permissions Json?
+
+  ipWhitelist       String[]
+  domainWhitelist   String[] @default([])
+
+  models    String[]
+  metadata  Json?
+
+
+  usage Usage[]
   @@map("api_keys")
 }
 
-model ModelChain {
+model FallbackChain {
   id          String   @id @default(cuid())
-  projectId   String
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId   String?
+  project     Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
   name        String
   description String?
-  chainConfig Json // Array of model configs with order, provider, model, fallback conditions
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  type        String   @default("standard")
 
-  @@map("model_chains")
+  triggers    Json
+  steps       Json
+  active      Boolean  @default(true)
+  priority    Int      @default(0)
+
+  executionCount Int       @default(0)
+  successCount   Int       @default(0)
+  lastExecuted   DateTime?
+  avgSavings     Float?
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  executions FallbackExecution[]
+
+  @@index([userId, active])
+  @@index([projectId, active])
+  @@map("fallback_chains")
+}
+
+model FallbackExecution {
+  id             String   @id @default(cuid())
+  chainId        String
+  chain          FallbackChain @relation(fields: [chainId], references: [id], onDelete: Cascade)
+  requestId      String   @unique
+  primaryModel   String
+  triggerType    String
+  triggerDetails Json?
+  stepsExecuted  Json
+  finalModel     String?
+  success        Boolean
+  totalLatency   Int
+  primaryCost    Float
+  actualCost     Float
+  costSaved      Float?
+  timestamp      DateTime @default(now())
+
+  @@index([chainId, timestamp])
+  @@index([triggerType, timestamp])
+  @@map("fallback_executions")
 }
 
 model Usage {
   id           String   @id @default(cuid())
   apiKeyId     String
-  apiKey       ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  apiKey       ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Restrict)
   userId       String?
   user         User?    @relation(fields: [userId], references: [id])
   projectId    String?
   project      Project? @relation(fields: [projectId], references: [id])
   timestamp    DateTime @default(now())
-  provider     String // "openai", "google", "anthropic"
+  provider     String
   model        String
   tokensInput  Int
   tokensOutput Int
   cost         Float
-  markup       Float // 5-10% markup
-  totalCost    Float // cost + markup
+  markup       Float
+  totalCost    Float
   requestId    String   @unique
   success      Boolean
   latency      Int
@@ -150,36 +258,36 @@ model Usage {
   @@map("usage")
 }
 
+
 model Invoice {
-  id             String   @id @default(cuid())
-  userId         String   @map("user_id")
-  user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  invoiceNumber  String   @unique
-  amount         Float
-  subtotal       Float
-  vatAmount      Float
-  markupAmount   Float
-  currency       String
-  status         String   @default("pending")
-  issueDate      DateTime
-  dueDate        DateTime
-  periodStart    DateTime
-  periodEnd      DateTime
-  details        Json
-  emailSent      Boolean
-  emailId        String?
-  generatedAt    DateTime @default(now())
-  paidAt         DateTime?
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id")
+  user          User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invoiceNumber String   @unique
+  amount        Float
+  subtotal      Float
+  vatAmount     Float
+  markupAmount  Float
+  currency      String
+  status        String   @default("pending")
+  issueDate     DateTime
+  dueDate       DateTime
+  periodStart   DateTime
+  periodEnd     DateTime
+  details       Json
+  emailSent     Boolean
+  emailId       String?
+  generatedAt   DateTime @default(now())
+  paidAt        DateTime?
+
   @@map("invoices")
 }
-
-
 
 model Alert {
   id        String   @id @default(cuid())
   userId    String
   user      User?    @relation(fields: [userId], references: [id])
-  type      String // "budget", "usage", "anomaly"
+  type      String
   threshold Float
   message   String
   triggered Boolean  @default(false)
@@ -194,7 +302,7 @@ model CostAlert {
   userId        String
   user          User?     @relation(fields: [userId], references: [id])
   name          String
-  type          String // "daily", "weekly", "monthly", "threshold"
+  type          String
   threshold     Float
   currentSpend  Float     @default(0)
   active        Boolean   @default(true)
@@ -227,16 +335,24 @@ model AuditLog {
   id         String   @id @default(cuid())
   userId     String
   user       User     @relation(fields: [userId], references: [id])
-  action     String // "api_key_created", "model_called", "settings_changed", etc.
-  resource   String // Resource type affected
-  resourceId String? // ID of the resource
-  details    Json? // Additional details
-  ipAddress  String?
-  userAgent  String?
+  action     String
+  resource   String
+  resourceId String?
+  details    Json?
+
+  ipAddress    String?
+  userAgent    String?
+  geoLocation  Json?
+  requestId    String?
+  requestType  String?
+
   timestamp  DateTime @default(now())
 
   @@index([userId, timestamp])
   @@index([action, timestamp])
+  @@index([resource, timestamp])
+  @@index([ipAddress, timestamp])
+  @@index([requestId])
   @@map("audit_logs")
 }
 
@@ -249,11 +365,12 @@ model SystemConfig {
 
   @@map("system_config")
 }
+
 model ModelProviderInfo {
-  id          String        @id @default(cuid())
-  providerId  String        @unique // "openai", "google", "anthropic"
-  name        String        // "OpenAI", "Google AI"
-  iconUrl     String?       // URL to provider logo
+  id          String             @id @default(cuid())
+  providerId  String             @unique
+  name        String
+  iconUrl     String?
   description String?
   models      ModelDescription[]
 
@@ -261,24 +378,24 @@ model ModelProviderInfo {
 }
 
 model ModelDescription {
-  id                  String   @id @default(cuid()) // Your internal unique ID for the model offering
-  modelIdentifier     String   // The actual ID used with the provider API, e.g., "gpt-4-turbo", "claude-3-opus"
-  name                String   // User-friendly display name, e.g., "GPT-4 Turbo"
-  providerInfoId      String
-  provider            ModelProviderInfo @relation(fields: [providerInfoId], references: [id])
-  description         String
-  capabilities        String[] // List of capabilities like "text-generation", "chat", "vision"
-  contextWindow       String?  // e.g., "128K tokens"
-  pricingInfo         String?  // Simplified pricing string or link to detailed pricing
-  status              String   @default("available") // "available", "beta", "deprecated", "restricted"
-  inputModalities     String[] @default(["text"])
-  outputModalities    String[] @default(["text"])
-  isFineTuneable      Boolean  @default(false)
-  order               Int?     // For display order within a provider
-  notes               String?  // Internal notes or public advisories
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  id                String            @id @default(cuid())
+  modelIdentifier   String
+  name              String
+  providerInfoId    String
+  provider          ModelProviderInfo @relation(fields: [providerInfoId], references: [id])
+  description       String
+  capabilities      String[]
+  contextWindow     String?
+  pricingInfo       String?
+  status            String            @default("available")
+  inputModalities   String[]          @default(["text"])
+  outputModalities  String[]          @default(["text"])
+  isFineTuneable    Boolean           @default(false)
+  displayOrder      Int?
+  notes             String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
 
-  @@unique([providerInfoId, modelIdentifier]) // Ensure model ID is unique per provider
+  @@unique([providerInfoId, modelIdentifier])
   @@map("model_descriptions")
 }

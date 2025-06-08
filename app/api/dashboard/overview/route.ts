@@ -1,106 +1,128 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth/next';
-import { authOptions } from '@/lib/nextAuthOptions';
-import { prisma } from '@/lib/prisma';
-import { startOfMonth, endOfMonth, subMonths } from 'date-fns';
+import {NextRequest, NextResponse} from 'next/server';
+import {prisma} from '@/lib/prisma';
+import {authMiddleware} from '@/lib/auth';
+import {startOfMonth, subMonths, startOfDay, subDays} from 'date-fns';
 
-export async function GET(request: NextRequest) {
+export async function GET(req: NextRequest) {
+    const authResult = await authMiddleware(req);
+    if (authResult instanceof NextResponse) return authResult;
+    const user = authResult;
+
     try {
-        const session = await getServerSession(authOptions);
-        if (!session?.user?.id) {
-            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-        }
-
-        const userId = session.user.id;
         const now = new Date();
-        const currentMonthStart = startOfMonth(now);
-        const currentMonthEnd = endOfMonth(now);
+        const thisMonthStart = startOfMonth(now);
         const lastMonthStart = startOfMonth(subMonths(now, 1));
-        const lastMonthEnd = endOfMonth(subMonths(now, 1));
+        const lastMonthEnd = thisMonthStart;
+
+        const userProjects = await prisma.project.findMany({
+            where: {ownerId: user.id},
+            select: {id: true}
+        });
+        const projectIds = userProjects.map(p => p.id);
 
         const [
-            currentMonthUsage,
-            lastMonthUsage,
-            activeKeys,
-            keysInUse,
-            totalUsage,
+            usageThisMonth,
+            usageLastMonth,
+            allAssociatedKeys,
+            distinctKeysUsedThisMonth,
+
+            topModels,
+            cacheStats,
+            recentFailures,
+            latencyStats
         ] = await Promise.all([
             prisma.usage.aggregate({
-                where: {
-                    userId,
-                    timestamp: {
-                        gte: currentMonthStart,
-                        lte: currentMonthEnd
-                    }
-                },
-                _sum: {
-                    totalCost: true,
-                    tokensInput: true,
-                    tokensOutput: true
-                }
+                where: {userId: user.id, timestamp: {gte: thisMonthStart}},
+                _sum: {totalCost: true, tokensInput: true, tokensOutput: true},
+                _count: {_all: true}
             }),
-
             prisma.usage.aggregate({
-                where: {
-                    userId,
-                    timestamp: {
-                        gte: lastMonthStart,
-                        lte: lastMonthEnd
-                    }
-                },
-                _sum: {
-                    totalCost: true,
-                    tokensInput: true,
-                    tokensOutput: true
-                }
+                where: {userId: user.id, timestamp: {gte: lastMonthStart, lt: lastMonthEnd}},
+                _sum: {totalCost: true, tokensInput: true, tokensOutput: true},
+                _count: {_all: true}
             }),
-
-            prisma.apiKey.count({
-                where: {
-                    userId,
-                    active: true
-                }
-            }),
-
-            prisma.apiKey.count({
-                where: {
-                    userId,
-                    active: true,
-                    lastUsed: {
-                        gte: new Date(Date.now() - 24 * 60 * 60 * 1000)
-                    }
-                }
+            prisma.apiKey.findMany({
+                where: {revokedAt: null, OR: [{userId: user.id}, {projectId: {in: projectIds}}]},
+                select: {id: true, active: true}
             }),
 
             prisma.usage.findMany({
-                where: { userId },
+                where: {userId: user.id, timestamp: {gte: thisMonthStart}},
+                distinct: ['apiKeyId'],
+                select: {apiKeyId: true}
             }),
+
+            prisma.usage.groupBy({
+                by: ['model'],
+                where: {userId: user.id, timestamp: {gte: thisMonthStart}},
+                _count: {model: true},
+                orderBy: {_count: {model: 'desc'}},
+                take: 5
+            }),
+            prisma.usage.aggregate({
+                where: {userId: user.id, timestamp: {gte: thisMonthStart}, cacheHit: true},
+                _sum: {cost: true},
+                _count: {_all: true}
+            }),
+            prisma.usage.findMany({
+                where: {userId: user.id, success: false, timestamp: {gte: subDays(now, 7)}},
+                take: 5,
+                orderBy: {timestamp: 'desc'},
+                select: {model: true, timestamp: true, endpoint: true}
+            }),
+            prisma.$queryRaw`SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY latency) as p50, percentile_cont(0.9) WITHIN
+                             GROUP (ORDER BY latency) as p90, percentile_cont(0.95) WITHIN
+                             GROUP (ORDER BY latency) as p95
+                             FROM "usage"
+                             WHERE "userId" = ${user.id}
+                               AND "timestamp" >= ${startOfDay(subDays(now, 1))}`
         ]);
 
-        const currentCost = currentMonthUsage._sum.totalCost || 0;
-        const lastMonthCost = lastMonthUsage._sum.totalCost || 0;
-        const currentTokens = (currentMonthUsage._sum.tokensInput || 0) + (currentMonthUsage._sum.tokensOutput || 0);
-        const lastMonthTokens = (lastMonthUsage._sum.tokensInput || 0) + (lastMonthUsage._sum.tokensOutput || 0);
+        const activeKeys = allAssociatedKeys.filter(k => k.active).length;
+        const totalKeys = allAssociatedKeys.length;
+        const keysUsedThisMonth = distinctKeysUsedThisMonth.length;
 
-        const response = {
-            totalRequests: totalUsage.length,
-            totalTokens: totalUsage.reduce((acc, curr) => acc + (curr.tokensInput + curr.tokensOutput), 0),
-            currentCost: currentCost,
-            activeKeys,
-            keysInUse,
-            percentageChanges: {
-                cost: ((currentCost - lastMonthCost) / (lastMonthCost || 1)) * 100,
-                requests: ((totalUsage.filter(item => item.timestamp >= currentMonthStart && item.timestamp <= currentMonthEnd).length - totalUsage.filter(item => item.timestamp >= lastMonthStart && item.timestamp <= lastMonthEnd).length) / (totalUsage.filter(item => item.timestamp >= lastMonthStart && item.timestamp <= lastMonthEnd).length || 1)) * 100,
-                tokens: ((currentTokens - lastMonthTokens) / (lastMonthTokens || 1)) * 100
-            }
+        const currentCost = usageThisMonth._sum.totalCost ?? 0;
+        const totalRequests = usageThisMonth._count._all;
+        const totalTokens = (usageThisMonth._sum.tokensInput ?? 0) + (usageThisMonth._sum.tokensOutput ?? 0);
+        const lastMonthCost = usageLastMonth._sum.totalCost ?? 0;
+        const lastMonthRequests = usageLastMonth._count._all;
+        const lastMonthTokens = (usageLastMonth._sum.tokensInput ?? 0) + (usageLastMonth._sum.tokensOutput ?? 0);
+        const calculateChange = (current: number, previous: number) => {
+            if (previous === 0) return current > 0 ? 100.0 : 0;
+            return ((current - previous) / previous) * 100;
         };
+        const latencyData = (latencyStats as any[])[0] || {p50: 0, p90: 0, p95: 0};
 
-        return NextResponse.json(response);
+        return NextResponse.json({
+            totalRequests,
+            totalTokens,
+            currentCost,
+            keysInUse: keysUsedThisMonth,
+            percentageChanges: {
+                cost: calculateChange(currentCost, lastMonthCost),
+                requests: calculateChange(totalRequests, lastMonthRequests),
+                tokens: calculateChange(totalTokens, lastMonthTokens),
+            },
+            keyStats: {
+                total: totalKeys,
+                active: activeKeys,
+                inactive: totalKeys - activeKeys
+            },
+            topModels: topModels.map(m => ({model: m.model, count: m._count.model})),
+            cachePerformance: {
+                hits: cacheStats._count._all,
+                costSaved: cacheStats._sum.cost ?? 0,
+            },
+            recentFailures,
+            latency: {
+                p50: Math.round(latencyData.p50),
+                p90: Math.round(latencyData.p90),
+                p95: Math.round(latencyData.p95),
+            }
+        });
     } catch (error) {
-        console.error('Overview API error:', error);
-        return NextResponse.json(
-            { error: 'Failed to fetch overview data' },
-            { status: 500 }
-        );
+        console.error('Dashboard Overview API error:', error);
+        return NextResponse.json({error: 'Failed to fetch overview data'}, {status: 500});
     }
 }

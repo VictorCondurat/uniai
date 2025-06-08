@@ -8,12 +8,13 @@ import { sendVerificationEmail } from '@/lib/email';
 const registerSchema = z.object({
     email: z.string().email(),
     password: z.string().min(8),
+    name: z.string().min(1, 'Name is required')
 });
 
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
-        const { email, password } = registerSchema.parse(body);
+        const { email, password,name } = registerSchema.parse(body);
 
         const existingUser = await prisma.user.findUnique({
             where: { email },
@@ -33,6 +34,7 @@ export async function POST(request: NextRequest) {
 
         const user = await prisma.user.create({
             data: {
+                name,
                 email,
                 password: hashedPassword,
                 verificationCode,

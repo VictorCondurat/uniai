@@ -17,33 +17,12 @@ import {
 } from '@/components/ui/tabs';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
-import {Progress} from '@/components/ui/progress';
 import {Label} from '@/components/ui/label';
 import {Switch} from '@/components/ui/switch';
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from '@/components/ui/select';
 import {Badge} from '@/components/ui/badge';
-import {Alert, AlertDescription} from '@/components/ui/alert';
 import { toast } from 'sonner';
 import {
-    User,
-    Shield,
-    CreditCard,
-    Bell,
-    Key,
-    Globe,
-    AlertTriangle,
-    Check,
-    X,
     Loader2,
-    Mail,
-    Lock,
-    Webhook,
     DollarSign,
 } from 'lucide-react';
 
@@ -51,19 +30,8 @@ interface UserSettings {
     id: string;
     email: string;
     name: string | null;
-    autoModelEnabled: boolean;
     role: string;
     createdAt: string;
-}
-
-interface SpendingLimit {
-    id: string;
-    type: 'global' | 'project';
-    projectId?: string;
-    projectName?: string;
-    limit: number;
-    period: 'daily' | 'weekly' | 'monthly';
-    currentSpend: number;
 }
 
 interface NotificationSettings {
@@ -80,9 +48,8 @@ interface NotificationSettings {
 
 export default function SettingsPage() {
     const {data: session, update} = useSession();
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(true);
     const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
-    const [spendingLimits, setSpendingLimits] = useState<SpendingLimit[]>([]);
     const [notifications, setNotifications] = useState<NotificationSettings>({
         emailAlerts: true,
         costAlertThreshold: 100,
@@ -104,46 +71,33 @@ export default function SettingsPage() {
         newPassword: '',
         confirmPassword: '',
     });
-    const [newSpendingLimit, setNewSpendingLimit] = useState({
-        type: 'global',
-        projectId: '',
-        limit: 0,
-        period: 'monthly',
-    });
 
     useEffect(() => {
+        const fetchSettings = async () => {
+            setLoading(true);
+            try {
+                const response = await fetch('/api/settings');
+                if (response.ok) {
+                    const data = await response.json();
+                    setUserSettings(data.user);
+                    setNotifications(data.notifications || notifications);
+                    setProfileForm({
+                        name: data.user.name || '',
+                        email: data.user.email,
+                    });
+                } else {
+                    toast.error("Failed to load settings. Please try again later.");
+                }
+            } catch (error) {
+                console.error('Failed to fetch settings:', error);
+                toast.error("An error occurred while fetching your settings.");
+            } finally {
+                setLoading(false);
+            }
+        };
+
         fetchSettings();
-        fetchSpendingLimits();
     }, []);
-
-    const fetchSettings = async () => {
-        try {
-            const response = await fetch('/api/settings');
-            if (response.ok) {
-                const data = await response.json();
-                setUserSettings(data.user);
-                setNotifications(data.notifications || notifications);
-                setProfileForm({
-                    name: data.user.name || '',
-                    email: data.user.email,
-                });
-            }
-        } catch (error) {
-            console.error('Failed to fetch settings:', error);
-        }
-    };
-
-    const fetchSpendingLimits = async () => {
-        try {
-            const response = await fetch('/api/settings/spending-limits');
-            if (response.ok) {
-                const data = await response.json();
-                setSpendingLimits(data);
-            }
-        } catch (error) {
-            console.error('Failed to fetch spending limits:', error);
-        }
-    };
 
     const updateProfile = async () => {
         setLoading(true);
@@ -151,20 +105,19 @@ export default function SettingsPage() {
             const response = await fetch('/api/settings/profile', {
                 method: 'PATCH',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(profileForm),
+                body: JSON.stringify({name: profileForm.name}),
             });
 
             if (response.ok) {
                 await update();
-
-                toast.success('Profile updated successfully');
-                fetchSettings();
+                setUserSettings(prev => prev ? {...prev, name: profileForm.name} : null);
+                toast.success('Name updated successfully!');
             } else {
-                throw new Error('Failed to update profile');
+                const data = await response.json();
+                throw new Error(data.error || 'Failed to update profile.');
             }
-        } catch (error) {
-
-            toast.error('Failed to update profile');
+        } catch (error: any) {
+            toast.error(error.message);
         } finally {
             setLoading(false);
         }
@@ -172,7 +125,7 @@ export default function SettingsPage() {
 
     const updatePassword = async () => {
         if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-            toast.error('Passwords do not match');
+            toast.error('New passwords do not match.');
             return;
         }
 
@@ -188,7 +141,7 @@ export default function SettingsPage() {
             });
 
             if (response.ok) {
-                toast.success('Password updated successfully');
+                toast.success('Password updated successfully.');
                 setPasswordForm({
                     currentPassword: '',
                     newPassword: '',
@@ -196,81 +149,12 @@ export default function SettingsPage() {
                 });
             } else {
                 const data = await response.json();
-                throw new Error(data.error || 'Failed to update password');
+                throw new Error(data.error || 'Failed to update password.');
             }
         } catch (error: any) {
-            toast.error('Failed to update password');
+            toast.error(error.message);
         } finally {
             setLoading(false);
-        }
-    };
-
-    const toggleAutoModel = async () => {
-        if (!userSettings) return;
-
-        try {
-            const response = await fetch('/api/settings/auto-model', {
-                method: 'PATCH',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    enabled: !userSettings.autoModelEnabled,
-                }),
-            });
-
-            if (response.ok) {
-                setUserSettings({
-                    ...userSettings,
-                    autoModelEnabled: !userSettings.autoModelEnabled,
-                });
-
-                toast.success(`Auto model selection ${!userSettings.autoModelEnabled ? 'enabled' : 'disabled'}`);
-            }
-        } catch (error) {
-            toast.error('Failed to update auto model setting');
-        }
-    };
-
-    const addSpendingLimit = async () => {
-        setLoading(true);
-        try {
-            const response = await fetch('/api/settings/spending-limits', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(newSpendingLimit),
-            });
-
-            if (response.ok) {
-                toast.success('Spending limit added successfully');
-                fetchSpendingLimits();
-                setNewSpendingLimit({
-                    type: 'global',
-                    projectId: '',
-                    limit: 0,
-                    period: 'monthly',
-                });
-            } else {
-                throw new Error('Failed to add spending limit');
-            }
-        } catch (error) {
-            toast.error('Failed to add spending limit');
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const removeSpendingLimit = async (id: string) => {
-        try {
-            const response = await fetch(`/api/settings/spending-limits/${id}`, {
-                method: 'DELETE',
-            });
-
-            if (response.ok) {
-
-                toast.success('Spending limit removed successfully');
-                fetchSpendingLimits();
-            }
-        } catch (error) {
-            toast.error('Failed to remove spending limit');
         }
     };
 
@@ -284,23 +168,31 @@ export default function SettingsPage() {
             });
 
             if (response.ok) {
-                toast.success('Notification settings updated successfully');
+                toast.success('Notification settings updated successfully.');
             } else {
-                throw new Error('Failed to update notifications');
+                throw new Error('Failed to update notification settings.');
             }
-        } catch (error) {
-            toast.error('Failed to update notification settings');
+        } catch (error: any) {
+            toast.error(error.message);
         } finally {
             setLoading(false);
         }
     };
 
-    const generateApiDocs = async () => {
-        window.open('/api/docs', '_blank');
-    };
+    if (loading && !userSettings) {
+        return (
+            <div className="flex justify-center items-center h-64">
+                <Loader2 className="h-8 w-8 animate-spin text-gray-500"/>
+            </div>
+        );
+    }
 
     if (!userSettings) {
-        return <div className="flex justify-center items-center h-64">Loading...</div>;
+        return (
+            <div className="flex justify-center items-center h-64">
+                <p>Could not load user settings.</p>
+            </div>
+        );
     }
 
     return (
@@ -308,7 +200,7 @@ export default function SettingsPage() {
             <div>
                 <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
                 <p className="mt-1 text-sm text-gray-600">
-                    Manage your account settings and preferences
+                    Manage your account settings and preferences.
                 </p>
             </div>
 
@@ -316,8 +208,6 @@ export default function SettingsPage() {
                 <TabsList>
                     <TabsTrigger value="profile">Profile</TabsTrigger>
                     <TabsTrigger value="security">Security</TabsTrigger>
-                    <TabsTrigger value="api">API Settings</TabsTrigger>
-                    <TabsTrigger value="spending">Spending Limits</TabsTrigger>
                     <TabsTrigger value="notifications">Notifications</TabsTrigger>
                     <TabsTrigger value="billing">Billing</TabsTrigger>
                 </TabsList>
@@ -327,7 +217,7 @@ export default function SettingsPage() {
                         <CardHeader>
                             <CardTitle>Profile Information</CardTitle>
                             <CardDescription>
-                                Update your account information
+                                Update your account's public information.
                             </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
@@ -346,20 +236,20 @@ export default function SettingsPage() {
                                     id="email"
                                     type="email"
                                     value={profileForm.email}
-                                    onChange={(e) => setProfileForm({...profileForm, email: e.target.value})}
-                                    placeholder="Enter your email"
+                                    disabled
                                 />
+                                <p className="text-xs text-muted-foreground">
+                                    Your email address cannot be changed.
+                                </p>
                             </div>
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between pt-2">
                                 <div>
                                     <p className="text-sm font-medium">Account Type</p>
-                                    <p className="text-sm text-gray-500">
-                                        <Badge variant="outline">{userSettings.role}</Badge>
-                                    </p>
+                                    <Badge variant="outline" className="mt-1">{userSettings.role}</Badge>
                                 </div>
                                 <div>
                                     <p className="text-sm font-medium">Member Since</p>
-                                    <p className="text-sm text-gray-500">
+                                    <p className="mt-1 text-sm text-gray-500">
                                         {new Date(userSettings.createdAt).toLocaleDateString()}
                                     </p>
                                 </div>
@@ -377,7 +267,7 @@ export default function SettingsPage() {
                         <CardHeader>
                             <CardTitle>Change Password</CardTitle>
                             <CardDescription>
-                                Update your password to keep your account secure
+                                Update your password to keep your account secure.
                             </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
@@ -425,160 +315,16 @@ export default function SettingsPage() {
                         <CardHeader>
                             <CardTitle>Two-Factor Authentication</CardTitle>
                             <CardDescription>
-                                Add an extra layer of security to your account
+                                Add an extra layer of security to your account.
                             </CardDescription>
                         </CardHeader>
-                        <CardContent>
-                            <Alert>
-                                <AlertTriangle className="h-4 w-4"/>
-                                <AlertDescription>
-                                    Two-factor authentication will be available in a future update
-                                </AlertDescription>
-                            </Alert>
-                        </CardContent>
-                    </Card>
-                </TabsContent>
-
-                <TabsContent value="api" className="space-y-4">
-                    <Card>
-                        <CardHeader>
-                            <CardTitle>Auto Model Selection</CardTitle>
-                            <CardDescription>
-                                Automatically select the most cost-effective model based on your request
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="flex items-center justify-between">
-                                <div className="space-y-1">
-                                    <p className="text-sm font-medium">Enable Auto Model Selection</p>
-                                    <p className="text-sm text-gray-500">
-                                        Let the system choose the best model for each request based on cost and
-                                        performance
-                                    </p>
-                                </div>
-                                <Switch
-                                    checked={userSettings.autoModelEnabled}
-                                    onCheckedChange={toggleAutoModel}
-                                />
-                            </div>
-                        </CardContent>
-                    </Card>
-
-                    <Card>
-                        <CardHeader>
-                            <CardTitle>API Documentation</CardTitle>
-                            <CardDescription>
-                                Access API documentation and integration guides
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <Button onClick={generateApiDocs} variant="outline">
-                                <Globe className="mr-2 h-4 w-4"/>
-                                View API Documentation
+                        <CardContent className="flex items-center justify-between rounded-lg border p-4">
+                            <p className="text-sm text-muted-foreground">
+                                This feature will be available in a future update.
+                            </p>
+                            <Button variant="outline" disabled>
+                                Enable 2FA
                             </Button>
-                        </CardContent>
-                    </Card>
-                </TabsContent>
-
-                <TabsContent value="spending" className="space-y-4">
-                    <Card>
-                        <CardHeader>
-                            <CardTitle>Spending Limits</CardTitle>
-                            <CardDescription>
-                                Set limits to control your API usage costs
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                            <div className="space-y-4">
-                                {spendingLimits.map((limit) => (
-                                    <div key={limit.id}
-                                         className="flex items-center justify-between p-4 border rounded-lg">
-                                        <div>
-                                            <p className="font-medium">
-                                                {limit.type === 'global' ? 'Global Limit' : `Project: ${limit.projectName}`}
-                                            </p>
-                                            <p className="text-sm text-gray-500">
-                                                ${limit.limit} / {limit.period}
-                                            </p>
-                                            <Progress
-                                                value={(limit.currentSpend / limit.limit) * 100}
-                                                className="mt-2 h-2 w-32"
-                                            />
-                                            <p className="text-xs text-gray-500 mt-1">
-                                                ${limit.currentSpend.toFixed(2)} spent
-                                            </p>
-                                        </div>
-                                        <Button
-                                            variant="ghost"
-                                            size="sm"
-                                            onClick={() => removeSpendingLimit(limit.id)}
-                                        >
-                                            <X className="h-4 w-4"/>
-                                        </Button>
-                                    </div>
-                                ))}
-                            </div>
-
-                            <div className="border-t pt-4">
-                                <h4 className="font-medium mb-4">Add New Spending Limit</h4>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-2">
-                                        <Label>Type</Label>
-                                        <Select
-                                            value={newSpendingLimit.type}
-                                            onValueChange={(value) => setNewSpendingLimit({
-                                                ...newSpendingLimit,
-                                                type: value as any
-                                            })}
-                                        >
-                                            <SelectTrigger>
-                                                <SelectValue/>
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                <SelectItem value="global">Global</SelectItem>
-                                                <SelectItem value="project">Project</SelectItem>
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label>Period</Label>
-                                        <Select
-                                            value={newSpendingLimit.period}
-                                            onValueChange={(value) => setNewSpendingLimit({
-                                                ...newSpendingLimit,
-                                                period: value as any
-                                            })}
-                                        >
-                                            <SelectTrigger>
-                                                <SelectValue/>
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                <SelectItem value="daily">Daily</SelectItem>
-                                                <SelectItem value="weekly">Weekly</SelectItem>
-                                                <SelectItem value="monthly">Monthly</SelectItem>
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label>Limit Amount ($)</Label>
-                                        <Input
-                                            type="number"
-                                            value={newSpendingLimit.limit}
-                                            onChange={(e) => setNewSpendingLimit({
-                                                ...newSpendingLimit,
-                                                limit: parseFloat(e.target.value)
-                                            })}
-                                            placeholder="0.00"
-                                        />
-                                    </div>
-                                    <div className="flex items-end">
-                                        <Button onClick={addSpendingLimit} disabled={loading}>
-                                            {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}
-                                            Add Limit
-                                        </Button>
-                                    </div>
-                                </div>
-                            </div>
                         </CardContent>
                     </Card>
                 </TabsContent>
@@ -586,16 +332,16 @@ export default function SettingsPage() {
                 <TabsContent value="notifications" className="space-y-4">
                     <Card>
                         <CardHeader>
-                            <CardTitle>Email Notifications</CardTitle>
+                            <CardTitle>Notifications</CardTitle>
                             <CardDescription>
-                                Configure when you receive email alerts
+                                Configure when and how you receive alerts.
                             </CardDescription>
                         </CardHeader>
-                        <CardContent className="space-y-4">
+                        <CardContent className="space-y-6">
                             <div className="flex items-center justify-between">
                                 <div className="space-y-1">
-                                    <p className="text-sm font-medium">Email Alerts</p>
-                                    <p className="text-sm text-gray-500">Receive important notifications via email</p>
+                                    <Label className="font-medium">Email Alerts</Label>
+                                    <p className="text-sm text-muted-foreground">Receive important notifications via email.</p>
                                 </div>
                                 <Switch
                                     checked={notifications.emailAlerts}
@@ -637,40 +383,33 @@ export default function SettingsPage() {
                             </div>
 
                             <div className="space-y-2">
-                                <Label>Cost Alert Threshold ($)</Label>
+                                <Label htmlFor="cost-threshold">Cost Alert Threshold ($)</Label>
                                 <Input
+                                    id="cost-threshold"
                                     type="number"
                                     value={notifications.costAlertThreshold}
                                     onChange={(e) => setNotifications({
                                         ...notifications,
-                                        costAlertThreshold: parseFloat(e.target.value)
+                                        costAlertThreshold: parseFloat(e.target.value) || 0
                                     })}
                                     placeholder="100.00"
                                 />
-                                <p className="text-xs text-gray-500">Get notified when your spending exceeds this
-                                    amount</p>
+                                <p className="text-xs text-muted-foreground">
+                                    Get notified when your spending exceeds this amount.
+                                </p>
                             </div>
-                        </CardContent>
-                    </Card>
 
-                    <Card>
-                        <CardHeader>
-                            <CardTitle>Webhook Notifications</CardTitle>
-                            <CardDescription>
-                                Send alerts to your own endpoints
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
                             <div className="space-y-2">
-                                <Label>Webhook URL</Label>
+                                <Label htmlFor="webhook-url">Webhook URL</Label>
                                 <Input
+                                    id="webhook-url"
                                     type="url"
                                     value={notifications.webhookUrl || ''}
                                     onChange={(e) => setNotifications({...notifications, webhookUrl: e.target.value})}
                                     placeholder="https://your-domain.com/webhook"
                                 />
-                                <p className="text-xs text-gray-500">
-                                    POST requests will be sent to this URL for important events
+                                <p className="text-xs text-muted-foreground">
+                                    POST requests with alert payloads will be sent to this URL.
                                 </p>
                             </div>
 
@@ -687,36 +426,34 @@ export default function SettingsPage() {
                         <CardHeader>
                             <CardTitle>Billing Information</CardTitle>
                             <CardDescription>
-                                Manage your billing and payment settings
+                                Manage your plan and payment settings.
                             </CardDescription>
                         </CardHeader>
-                        <CardContent className="space-y-4">
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <p className="text-sm font-medium">Current Balance</p>
-                                    <p className="text-2xl font-bold">$0.00</p>
-                                </div>
-                                <div>
-                                    <p className="text-sm font-medium">Next Invoice</p>
-                                    <p className="text-sm text-gray-500">
-                                        {new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toLocaleDateString()}
+                        <CardContent className="space-y-6">
+                            <div className="flex items-start space-x-4 rounded-lg border bg-background p-4">
+                                <DollarSign className="mt-1 h-5 w-5 flex-shrink-0 text-muted-foreground"/>
+                                <div className="flex-grow">
+                                    <p className="font-semibold text-foreground">Pay-As-You-Go Plan</p>
+                                    <p className="text-sm text-muted-foreground">
+                                        You are on a flexible plan and will be invoiced monthly based on your usage.
                                     </p>
                                 </div>
                             </div>
 
-                            <Alert>
-                                <DollarSign className="h-4 w-4"/>
-                                <AlertDescription>
-                                    You are on a pay-as-you-go plan. You will be invoiced monthly for your usage.
-                                </AlertDescription>
-                            </Alert>
-
-                            <div className="space-y-2">
-                                <p className="text-sm font-medium">Billing Email</p>
-                                <p className="text-sm text-gray-500">{userSettings.email}</p>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <p className="text-sm font-medium">Next Invoice Date</p>
+                                    <p className="text-sm text-gray-500">
+                                        {new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toLocaleDateString()}
+                                    </p>
+                                </div>
+                                <div>
+                                    <p className="text-sm font-medium">Billing Email</p>
+                                    <p className="text-sm text-gray-500">{userSettings.email}</p>
+                                </div>
                             </div>
 
-                            <div className="flex gap-2">
+                            <div className="flex flex-col sm:flex-row gap-2">
                                 <Button variant="outline">
                                     View Invoices
                                 </Button>

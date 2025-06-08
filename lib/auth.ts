@@ -1,12 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToken } from 'next-auth/jwt';
 import { prisma } from './prisma';
-import type { User } from '@prisma/client'
-export type AuthenticatedUser = User
+import { createHash } from 'crypto';
+import type { User, ApiKey, Project } from '@prisma/client';
+
+import { ProjectPermission, roleHasPermission } from './permissions';
+
+export type AuthenticatedUser = User;
+
 interface AuthOptions {
     requiredRole?: 'user' | 'admin';
 }
 
+export function hashApiKey(apiKey: string): string {
+    return createHash('sha256').update(apiKey).digest('hex');
+}
 export async function authMiddleware(
     req: NextRequest,
     options: AuthOptions = {}
@@ -50,24 +58,62 @@ export async function authMiddleware(
     return user;
 }
 
-export async function verifyApiKey(apiKey: string | null) {
+export async function checkProjectPermission(
+    userId: string,
+    projectId: string,
+    requiredPermission: ProjectPermission
+): Promise<boolean> {
+    const membership = await prisma.projectMember.findUnique({
+        where: {
+            projectId_userId: { projectId, userId },
+        },
+        select: { role: true, permissions: true }
+    });
+
+    if (!membership) {
+        return false;
+    }
+
+    const overrides = membership.permissions as Record<string, boolean> | null;
+    if (overrides && overrides[requiredPermission] !== undefined) {
+        return overrides[requiredPermission];
+    }
+
+    return roleHasPermission(membership.role, requiredPermission);
+}
+
+export type VerifiedApiKey = ApiKey & {
+    user: User | null;
+    project: Project | null;
+};
+
+
+export async function verifyApiKey(apiKey: string | null): Promise<VerifiedApiKey | null> {
     if (!apiKey) {
         return null;
     }
 
+    const hashedKey = hashApiKey(apiKey);
+
     const key = await prisma.apiKey.findUnique({
-        where: { key: apiKey, active: true },
-        include: { user: true },
+        where: {
+            hashedKey: hashedKey,
+            active: true
+        },
+        include: {
+            user: true,
+            project: true
+        },
     });
 
-    if (!key || !key?.user?.verified) {
+    if (!key) {
         return null;
     }
 
-    await prisma.apiKey.update({
-        where: { id: key.id },
-        data: { lastUsed: new Date() },
-    });
+    if (key.expires && key.expires < new Date()) {
+        return null;
+    }
 
-    return { key, user: key.user };
+
+    return key;
 }

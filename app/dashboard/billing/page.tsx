@@ -5,15 +5,11 @@ import {Card} from '@/components/ui/card';
 import {Button} from '@/components/ui/button';
 import {Table, TableBody, TableCell, TableHead, TableHeader, TableRow} from '@/components/ui/table';
 import {Badge} from '@/components/ui/badge';
-import {Alert, AlertDescription} from '@/components/ui/alert';
-import {Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger} from '@/components/ui/dialog';
-import {Input} from '@/components/ui/input';
-import {Label} from '@/components/ui/label';
-import {Switch} from '@/components/ui/switch';
+import {Dialog, DialogContent, DialogHeader, DialogTitle} from '@/components/ui/dialog';
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select';
 import {CostChart} from '@/components/dashboard/charts/cost-chart';
-import {CostForecast} from '@/components/dashboard/alerts/cost-forecast';
 import {toast} from 'sonner';
+import {Download, Eye} from 'lucide-react';
 
 interface UsageData {
     currentMonth: number;
@@ -24,45 +20,30 @@ interface UsageData {
 
 interface Invoice {
     id: string;
-    date: string;
+    invoiceNumber: string;
+    issueDate: string;
+    dueDate: string;
+    periodStart: string;
+    periodEnd: string;
     amount: number;
+    subtotal: number;
+    vatAmount: number;
+    markupAmount: number;
+    currency: string;
     status: 'paid' | 'pending' | 'overdue';
-    downloadUrl: string;
-}
-
-interface SpendingLimit {
-    id: string;
-    amount: number;
-    period: 'daily' | 'monthly';
-    alertThreshold: number;
-    killSwitchEnabled: boolean;
-}
-
-interface BillingAlert {
-    id: string;
-    type: 'warning' | 'danger';
-    message: string;
-    threshold: number;
-    currentUsage: number;
+    emailSent: boolean;
+    paidAt?: string;
 }
 
 export default function BillingPage() {
     const [usageData, setUsageData] = useState<UsageData | null>(null);
     const [invoices, setInvoices] = useState<Invoice[]>([]);
-    const [spendingLimits, setSpendingLimits] = useState<SpendingLimit[]>([]);
-    const [alerts, setAlerts] = useState<BillingAlert[]>([]);
     const [loading, setLoading] = useState(true);
-    const [showLimitModal, setShowLimitModal] = useState(false);
     const [showInvoicePreview, setShowInvoicePreview] = useState(false);
     const [invoiceData, setInvoiceData] = useState<any>(null);
     const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
     const [isSendingEmail, setIsSendingEmail] = useState(false);
-    const [newLimit, setNewLimit] = useState({
-        amount: '',
-        period: 'monthly' as 'daily' | 'monthly',
-        alertThreshold: '80',
-        killSwitchEnabled: false
-    });
+    const [selectedPeriod, setSelectedPeriod] = useState<string>('current');
 
     useEffect(() => {
         fetchBillingData();
@@ -72,21 +53,16 @@ export default function BillingPage() {
         try {
             setLoading(true);
 
-            const usageResponse = await fetch('/api/usage');
+            const usageResponse = await fetch('/api/usage?type=summary');
             const usage = await usageResponse.json();
             setUsageData(usage);
 
             const invoicesResponse = await fetch('/api/invoices');
-            const invoicesData = await invoicesResponse.json();
-            setInvoices(invoicesData);
+            const invoicesResult = await invoicesResponse.json();
 
-            const limitsResponse = await fetch('/api/alerts/spending-limits');
-            const limitsData = await limitsResponse.json();
-            setSpendingLimits(limitsData);
-
-            const alertsResponse = await fetch('/api/alerts?type=billing');
-            const alertsData = await alertsResponse.json();
-            setAlerts(alertsData);
+            if (invoicesResult.success && invoicesResult.data) {
+                setInvoices(invoicesResult.data);
+            }
 
         } catch (error) {
             console.error('Error fetching billing data:', error);
@@ -98,34 +74,60 @@ export default function BillingPage() {
 
     const generateInvoicePreview = async () => {
         try {
+            const now = new Date();
+            const startDate = selectedPeriod === 'current'
+                ? new Date(now.getFullYear(), now.getMonth(), 1)
+                : new Date(now.getFullYear(), now.getMonth() - 1, 1);
+
+            const endDate = selectedPeriod === 'current'
+                ? new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999)
+                : new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+
             const response = await fetch('/api/invoices/preview', {
-                method: 'POST'
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    startDate: startDate.toISOString(),
+                    endDate: endDate.toISOString()
+                })
             });
+
             const data = await response.json();
 
-            if (response.ok) {
+            if (response.ok && data.data) {
                 setInvoiceData(data.data);
                 setShowInvoicePreview(true);
-                toast.success('Invoice preview generated successfully');
+            } else if (data.message === 'No usage data found for the specified period') {
+                toast.info('No usage data found for the selected period');
             } else {
                 throw new Error(data.error || 'Failed to generate preview');
             }
         } catch (error) {
-            toast.error('Failed to generate invoice preview' +error)
+            toast.error('Failed to generate invoice preview');
         }
     };
 
-    const downloadInvoicePDF = async () => {
-        if (!invoiceData) return;
-
+    const downloadInvoicePDF = async (invoice?: Invoice) => {
         setIsGeneratingPDF(true);
         try {
+            let pdfInvoiceData = invoiceData;
+
+            if (invoice) {
+                const response = await fetch(`/api/invoices?id=${invoice.id}`);
+                const result = await response.json();
+                if (result.success && result.data) {
+                    pdfInvoiceData = result.data.details;
+                }
+            }
+
             const response = await fetch('/api/invoices/generate-pdf', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({invoiceData}),
+                body: JSON.stringify({invoiceData: pdfInvoiceData}),
             });
 
             if (response.ok) {
@@ -133,18 +135,18 @@ export default function BillingPage() {
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `invoice-${invoiceData.invoiceNumber}.pdf`;
+                a.download = `invoice-${pdfInvoiceData.invoiceNumber}.pdf`;
                 document.body.appendChild(a);
                 a.click();
                 window.URL.revokeObjectURL(url);
                 document.body.removeChild(a);
 
-                toast.success('PDF generated successfully');
+                toast.success('PDF downloaded successfully');
             } else {
                 throw new Error('Failed to generate PDF');
             }
         } catch (error) {
-            toast.error('Failed to download PDF: ' + error);
+            toast.error('Failed to download PDF');
         } finally {
             setIsGeneratingPDF(false);
         }
@@ -170,86 +172,30 @@ export default function BillingPage() {
             const data = await response.json();
 
             if (response.ok) {
-
-                toast.success('Invoice email sent successfully');
+                toast.success('Invoice sent and saved successfully');
                 setShowInvoicePreview(false);
+                fetchBillingData();
             } else {
                 throw new Error(data.error || 'Failed to send invoice');
             }
         } catch (error) {
-            toast.error('Failed to send invoice email: ' + error);
+            toast.error('Failed to send invoice email');
         } finally {
             setIsSendingEmail(false);
         }
     };
 
-    const createSpendingLimit = async () => {
+    const viewInvoiceDetails = async (invoice: Invoice) => {
         try {
-            const response = await fetch('/api/alerts/spending-limits', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    amount: parseFloat(newLimit.amount),
-                    period: newLimit.period,
-                    alertThreshold: parseFloat(newLimit.alertThreshold),
-                    killSwitchEnabled: newLimit.killSwitchEnabled
-                }),
-            });
+            const response = await fetch(`/api/invoices?id=${invoice.id}`);
+            const result = await response.json();
 
-            if (response.ok) {
-                await fetchBillingData();
-                setShowLimitModal(false);
-                setNewLimit({
-                    amount: '',
-                    period: 'monthly',
-                    alertThreshold: '80',
-                    killSwitchEnabled: false
-                });
-
-                toast.success('Spending limit created successfully');
+            if (result.success && result.data) {
+                setInvoiceData(result.data.details);
+                setShowInvoicePreview(true);
             }
         } catch (error) {
-            toast.error('Failed to create spending limit: ' + error);
-        }
-    };
-
-    const toggleKillSwitch = async (limitId: string, enabled: boolean) => {
-        try {
-            const response = await fetch(`/api/alerts/spending-limits/${limitId}`, {
-                method: 'PATCH',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({killSwitchEnabled: enabled}),
-            });
-
-            if (response.ok) {
-                await fetchBillingData();
-
-                toast.success(`Kill switch ${enabled ? 'enabled' : 'disabled'} successfully`);
-            }
-        } catch (error) {
-            toast.error('Failed to update kill switch: ' + error);
-        }
-    };
-
-    const downloadInvoice = async (invoiceId: string) => {
-        try {
-            const response = await fetch(`/api/invoices/${invoiceId}/download`);
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.style.display = 'none';
-            a.href = url;
-            a.download = `invoice-${invoiceId}.pdf`;
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
-        } catch (error) {
-            toast.error('Failed to download invoice: ' + error);
+            toast.error('Failed to load invoice details');
         }
     };
 
@@ -259,7 +205,7 @@ export default function BillingPage() {
                 <div>
                     <h1 className="text-2xl font-bold text-gray-900">Billing</h1>
                     <p className="mt-1 text-sm text-gray-600">
-                        Manage your billing and invoices
+                        Manage your usage and invoices
                     </p>
                 </div>
                 <div className="animate-pulse space-y-4">
@@ -276,38 +222,27 @@ export default function BillingPage() {
                 <div>
                     <h1 className="text-2xl font-bold text-gray-900">Billing</h1>
                     <p className="mt-1 text-sm text-gray-600">
-                        Manage your billing and invoices
+                        Manage your usage and invoices
                     </p>
                 </div>
-                <div className="flex gap-2">
-                    <Button onClick={generateInvoicePreview} variant="outline">
-                        Preview Invoice
-                    </Button>
-                    <Button onClick={() => setShowLimitModal(true)}>
-                        Set Spending Limit
+                <div className="flex gap-2 items-center">
+                    <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
+                        <SelectTrigger className="w-40">
+                            <SelectValue/>
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="current">Current Month</SelectItem>
+                            <SelectItem value="previous">Previous Month</SelectItem>
+                        </SelectContent>
+                    </Select>
+                    <Button onClick={generateInvoicePreview}>
+                        Generate Invoice
                     </Button>
                 </div>
             </div>
 
-            {alerts.length > 0 && (
-                <div className="space-y-2">
-                    {alerts.map((alert) => (
-                        <Alert key={alert.id} variant={alert.type === 'danger' ? 'destructive' : 'default'}>
-                            <AlertDescription>
-                                <div className="flex justify-between items-center">
-                                    <span>{alert.message}</span>
-                                    <Badge variant={alert.type === 'danger' ? 'destructive' : 'secondary'}>
-                                        {((alert.currentUsage / alert.threshold) * 100).toFixed(1)}%
-                                    </Badge>
-                                </div>
-                            </AlertDescription>
-                        </Alert>
-                    ))}
-                </div>
-            )}
-
             <Card className="p-6">
-                <h3 className="text-lg font-medium text-gray-900 mb-4">Current Usage</h3>
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Usage Summary</h3>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="text-center p-4 bg-gray-50 rounded">
                         <p className="text-2xl font-bold text-gray-900">
@@ -325,84 +260,50 @@ export default function BillingPage() {
                         <p className="text-2xl font-bold text-gray-900">
                             ${usageData?.total?.toFixed(2) || '0.00'}
                         </p>
-                        <p className="text-sm text-gray-600">Total</p>
+                        <p className="text-sm text-gray-600">Total all time</p>
                     </div>
                 </div>
             </Card>
 
             {usageData?.dailyUsage && (
                 <Card className="p-6">
-                    <h3 className="text-lg font-medium text-gray-900 mb-4">Usage Trends</h3>
+                    <h3 className="text-lg font-medium text-gray-900 mb-4">Daily Usage Trend</h3>
                     <CostChart data={usageData.dailyUsage}/>
                 </Card>
             )}
 
             <Card className="p-6">
-                <h3 className="text-lg font-medium text-gray-900 mb-4">Cost Forecast</h3>
-                <CostForecast currentUsage={usageData?.currentMonth || 0}/>
-            </Card>
-
-            <Card className="p-6">
-                <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-lg font-medium text-gray-900">Spending Limits</h3>
-                    <Button onClick={() => setShowLimitModal(true)} size="sm">
-                        Add Limit
-                    </Button>
-                </div>
-
-                {spendingLimits.length === 0 ? (
-                    <p className="text-gray-500 text-center py-4">No spending limits configured</p>
-                ) : (
-                    <div className="space-y-4">
-                        {spendingLimits.map((limit) => (
-                            <div key={limit.id} className="flex items-center justify-between p-4 border rounded-lg">
-                                <div>
-                                    <p className="font-medium">${limit.amount} / {limit.period}</p>
-                                    <p className="text-sm text-gray-600">
-                                        Alert at {limit.alertThreshold}%
-                                    </p>
-                                </div>
-                                <div className="flex items-center gap-4">
-                                    <div className="flex items-center gap-2">
-                                        <Label htmlFor={`killswitch-${limit.id}`} className="text-sm">
-                                            Kill Switch
-                                        </Label>
-                                        <Switch
-                                            id={`killswitch-${limit.id}`}
-                                            checked={limit.killSwitchEnabled}
-                                            onCheckedChange={(checked) => toggleKillSwitch(limit.id, checked)}
-                                        />
-                                    </div>
-                                    <Badge variant={limit.killSwitchEnabled ? 'destructive' : 'secondary'}>
-                                        {limit.killSwitchEnabled ? 'Active' : 'Inactive'}
-                                    </Badge>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </Card>
-
-            <Card className="p-6">
-                <h3 className="text-lg font-medium text-gray-900 mb-4">Invoice History</h3>
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Invoices</h3>
 
                 {invoices.length === 0 ? (
-                    <p className="text-gray-500 text-center py-4">No invoices available</p>
+                    <div className="text-center py-8">
+                        <p className="text-gray-500 mb-4">No invoices generated yet</p>
+                        <Button onClick={generateInvoicePreview} variant="outline">
+                            Generate Your First Invoice
+                        </Button>
+                    </div>
                 ) : (
                     <Table>
                         <TableHeader>
                             <TableRow>
-                                <TableHead>Date</TableHead>
+                                <TableHead>Invoice Number</TableHead>
+                                <TableHead>Period</TableHead>
                                 <TableHead>Amount</TableHead>
                                 <TableHead>Status</TableHead>
-                                <TableHead>Actions</TableHead>
+                                <TableHead>Due Date</TableHead>
+                                <TableHead className="text-right">Actions</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
                             {invoices.map((invoice) => (
                                 <TableRow key={invoice.id}>
-                                    <TableCell>{new Date(invoice.date).toLocaleDateString()}</TableCell>
-                                    <TableCell>${invoice.amount.toFixed(2)}</TableCell>
+                                    <TableCell className="font-medium">{invoice.invoiceNumber}</TableCell>
+                                    <TableCell>
+                                        {new Date(invoice.periodStart).toLocaleDateString()} - {new Date(invoice.periodEnd).toLocaleDateString()}
+                                    </TableCell>
+                                    <TableCell>
+                                        {invoice.currency} {invoice.amount.toFixed(2)}
+                                    </TableCell>
                                     <TableCell>
                                         <Badge
                                             variant={
@@ -414,14 +315,24 @@ export default function BillingPage() {
                                             {invoice.status}
                                         </Badge>
                                     </TableCell>
+                                    <TableCell>{new Date(invoice.dueDate).toLocaleDateString()}</TableCell>
                                     <TableCell>
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() => downloadInvoice(invoice.id)}
-                                        >
-                                            Download
-                                        </Button>
+                                        <div className="flex justify-end gap-2">
+                                            <Button
+                                                size="sm"
+                                                variant="ghost"
+                                                onClick={() => viewInvoiceDetails(invoice)}
+                                            >
+                                                <Eye className="h-4 w-4"/>
+                                            </Button>
+                                            <Button
+                                                size="sm"
+                                                variant="ghost"
+                                                onClick={() => downloadInvoicePDF(invoice)}
+                                            >
+                                                <Download className="h-4 w-4"/>
+                                            </Button>
+                                        </div>
                                     </TableCell>
                                 </TableRow>
                             ))}
@@ -431,101 +342,90 @@ export default function BillingPage() {
             </Card>
 
             <Dialog open={showInvoicePreview} onOpenChange={setShowInvoicePreview}>
-                <DialogContent className="max-w-2xl">
+                <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
                     <DialogHeader>
-                        <DialogTitle>Invoice Preview</DialogTitle>
+                        <DialogTitle>Invoice Details</DialogTitle>
                     </DialogHeader>
                     {invoiceData && (
                         <div className="space-y-4">
-                            <div className="p-4 border rounded bg-gray-50">
-                                <p>Invoice Number: {invoiceData.invoiceNumber}</p>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="p-4 border rounded">
+                                    <p className="text-sm text-gray-600">Invoice Number</p>
+                                    <p className="font-medium">{invoiceData.invoiceNumber}</p>
+                                </div>
+                                <div className="p-4 border rounded">
+                                    <p className="text-sm text-gray-600">Total Amount</p>
+                                    <p className="font-medium text-lg">
+                                        {invoiceData.currency} {invoiceData.summary.total.toFixed(2)}
+                                    </p>
+                                </div>
                             </div>
-                            <div className="flex justify-end gap-2">
+
+                            <div className="p-4 border rounded">
+                                <p className="text-sm text-gray-600 mb-2">Billing Period</p>
+                                <p className="font-medium">
+                                    {new Date(invoiceData.period.start).toLocaleDateString()} - {new Date(invoiceData.period.end).toLocaleDateString()}
+                                </p>
+                            </div>
+
+                            <div className="p-4 border rounded">
+                                <p className="text-sm text-gray-600 mb-2">Breakdown</p>
+                                <div className="space-y-1">
+                                    <div className="flex justify-between">
+                                        <span>Subtotal:</span>
+                                        <span>{invoiceData.currency} {invoiceData.summary.subtotal.toFixed(2)}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span>Service Fee ({invoiceData.summary.markupRate.toFixed(1)}%):</span>
+                                        <span>{invoiceData.currency} {invoiceData.summary.markupAmount.toFixed(2)}</span>
+                                    </div>
+                                    {invoiceData.summary.vatAmount > 0 && (
+                                        <div className="flex justify-between">
+                                            <span>VAT ({invoiceData.summary.vatRate}%):</span>
+                                            <span>{invoiceData.currency} {invoiceData.summary.vatAmount.toFixed(2)}</span>
+                                        </div>
+                                    )}
+                                    <div className="flex justify-between font-bold pt-2 border-t">
+                                        <span>Total:</span>
+                                        <span>{invoiceData.currency} {invoiceData.summary.total.toFixed(2)}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="p-4 border rounded">
+                                <p className="text-sm text-gray-600 mb-2">Usage Summary</p>
+                                <div className="grid grid-cols-2 gap-2 text-sm">
+                                    <div>
+                                        <span className="text-gray-600">Total API Calls:</span>
+                                        <span className="ml-2 font-medium">{invoiceData.summary.totalApiCalls}</span>
+                                    </div>
+                                    <div>
+                                        <span className="text-gray-600">Total Tokens:</span>
+                                        <span
+                                            className="ml-2 font-medium">{invoiceData.summary.totalTokens.toLocaleString()}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="flex justify-end gap-2 pt-4">
                                 <Button
-                                    onClick={downloadInvoicePDF}
+                                    onClick={() => downloadInvoicePDF()}
                                     disabled={isGeneratingPDF}
                                     variant="outline"
                                 >
                                     {isGeneratingPDF ? 'Generating...' : 'Download PDF'}
                                 </Button>
-                                <Button
-                                    onClick={sendInvoiceEmail}
-                                    disabled={isSendingEmail}
-                                >
-                                    {isSendingEmail ? 'Sending...' : 'Send Email'}
-                                </Button>
+                                {!invoiceData.id && (
+                                    <Button
+                                        onClick={sendInvoiceEmail}
+                                        disabled={isSendingEmail}
+                                    >
+                                        {isSendingEmail ? 'Sending...' : 'Send & Save Invoice'}
+                                    </Button>
+                                )}
                             </div>
                         </div>
                     )}
-                </DialogContent>
-            </Dialog>
-
-            <Dialog open={showLimitModal} onOpenChange={setShowLimitModal}>
-                <DialogContent>
-                    <DialogHeader>
-                        <DialogTitle>Create Spending Limit</DialogTitle>
-                    </DialogHeader>
-                    <div className="space-y-4">
-                        <div>
-                            <Label htmlFor="amount">Amount ($)</Label>
-                            <Input
-                                id="amount"
-                                type="number"
-                                value={newLimit.amount}
-                                onChange={(e) => setNewLimit({...newLimit, amount: e.target.value})}
-                                placeholder="100.00"
-                            />
-                        </div>
-
-                        <div>
-                            <Label htmlFor="period">Period</Label>
-                            <Select
-                                value={newLimit.period}
-                                onValueChange={(value: 'daily' | 'monthly') =>
-                                    setNewLimit({...newLimit, period: value})
-                                }
-                            >
-                                <SelectTrigger>
-                                    <SelectValue/>
-                                </SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="daily">Daily</SelectItem>
-                                    <SelectItem value="monthly">Monthly</SelectItem>
-                                </SelectContent>
-                            </Select>
-                        </div>
-
-                        <div>
-                            <Label htmlFor="threshold">Alert Threshold (%)</Label>
-                            <Input
-                                id="threshold"
-                                type="number"
-                                value={newLimit.alertThreshold}
-                                onChange={(e) => setNewLimit({...newLimit, alertThreshold: e.target.value})}
-                                placeholder="80"
-                                min="1"
-                                max="100"
-                            />
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                            <Switch
-                                id="killswitch"
-                                checked={newLimit.killSwitchEnabled}
-                                onCheckedChange={(checked) => setNewLimit({...newLimit, killSwitchEnabled: checked})}
-                            />
-                            <Label htmlFor="killswitch">Enable Kill Switch</Label>
-                        </div>
-
-                        <div className="flex justify-end gap-2">
-                            <Button variant="outline" onClick={() => setShowLimitModal(false)}>
-                                Cancel
-                            </Button>
-                            <Button onClick={createSpendingLimit}>
-                                Create Limit
-                            </Button>
-                        </div>
-                    </div>
                 </DialogContent>
             </Dialog>
         </div>

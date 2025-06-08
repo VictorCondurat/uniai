@@ -6,7 +6,6 @@ import {
     View,
     StyleSheet,
     Font,
-    Image
 } from '@react-pdf/renderer';
 import { InvoiceData } from '@/types/invoice';
 

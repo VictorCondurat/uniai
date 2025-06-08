@@ -102,7 +102,10 @@ interface UsageRecord {
         name: string;
     };
 }
-
+interface ProjectData {
+    owned: Project[];
+    memberOf: Project[];
+}
 interface UsageStats {
     totalRequests: number;
     totalCost: number;
@@ -265,7 +268,7 @@ export default function UsagePage() {
                 axios.get<UsageStats>(`/api/usage/stats?${params.toString()}`),
                 axios.get<ModelUsage[]>(`/api/usage/models?${params.toString()}`),
                 axios.get<DailyUsageDataPoint[]>(`/api/usage/daily?${params.toString()}`),
-                axios.get<Project[]>('/api/projects'), // Projects fetch isn't dependent on filters
+                axios.get<ProjectData>('/api/projects'),
             ]);
 
             setUsage(usageRes.data);
@@ -278,22 +281,18 @@ export default function UsagePage() {
             setModelUsage(modelsWithCostPer1KT);
 
             setDailyUsage(dailyRes.data);
-            setProjects(projectsRes.data);
+
+            const allProjects = [...projectsRes.data.owned, ...projectsRes.data.memberOf];
+            setProjects(allProjects);
 
         } catch (err) {
-            console.error('Failed to fetch usage data:', err);
-            if (axios.isAxiosError(err) && err.response) {
-                setError(`Failed to load data: ${err.response.status} - ${err.response.statusText}. Please try again.`);
-            } else {
-                setError('Failed to load usage data. Please check your network connection.');
-            }
-            toast.error('Failed to fetch usage data. ' + (error || ''));
+            console.error('Error fetching usage data:', err);
+            setError('Failed to load usage data. Please try again.');
+            toast.error('Failed to load usage data');
         } finally {
             setLoading(false);
-            setRefreshing(false);
         }
-    }, [dateRange, projectFilter, providerFilter, modelFilter, startDate, endDate, error]);
-
+    }, [dateRange, projectFilter, providerFilter, modelFilter, startDate, endDate]);
     useEffect(() => {
         fetchAllData();
     }, [fetchAllData]);
@@ -318,7 +317,7 @@ export default function UsagePage() {
             if (modelFilter !== 'all') params.append('model', modelFilter);
 
             const response = await axios.get(`/api/usage/export?${params.toString()}`, {
-                responseType: 'blob', // Important for downloading files
+                responseType: 'blob',
             });
 
             const url = window.URL.createObjectURL(new Blob([response.data]));
@@ -378,7 +377,6 @@ export default function UsagePage() {
         return (CHART_COLORS as any)[provider.toLowerCase()] || CHART_COLORS.default;
     };
 
-    // Prepare data for the Cost by Provider Pie Chart
     const costByProviderData = modelUsage.reduce((acc, curr) => {
         const existing = acc.find(item => item.provider === curr.provider);
         if (existing) {
@@ -389,7 +387,6 @@ export default function UsagePage() {
         return acc;
     }, [] as { provider: string; cost: number }[]);
 
-    // Prepare data for Request Status Pie Chart
     const requestStatusData = [
         {name: 'Successful', value: usage.filter(u => u.success).length, color: CHART_COLORS.successful},
         {name: 'Failed', value: usage.filter(u => !u.success).length, color: CHART_COLORS.failed},
@@ -675,11 +672,11 @@ export default function UsagePage() {
                         icon={DollarSign}
                         color="from-green-500 to-emerald-500"
                         trendValue={stats.costTrend}
-                        isCostOrLatencyTrend={true} // Higher cost is bad
+                        isCostOrLatencyTrend={true}
                     />
                     <StatCard
                         title="Total Tokens"
-                        value={formatNumber(stats.totalTokens)} // Using generalized formatNumber
+                        value={formatNumber(stats.totalTokens)}
                         icon={Database}
                         color="from-purple-500 to-pink-500"
                         trendValue={stats.tokensTrend}
@@ -690,7 +687,7 @@ export default function UsagePage() {
                         value={`${stats.avgLatency.toFixed(0)}ms`}
                         icon={Rocket}
                         color="from-orange-500 to-amber-500"
-                        trendValue={null} // Assuming API doesn't provide latency trend yet
+                        trendValue={null}
                         subText="Average response time"
                     />
                     <StatCard
@@ -832,7 +829,7 @@ export default function UsagePage() {
                                                     className="text-xs text-gray-500"
                                                 />
                                                 <YAxis
-                                                    tickFormatter={(value) => `${formatNumber(value)}`} // Use formatNumber for tokens
+                                                    tickFormatter={(value) => `${formatNumber(value)}`}
                                                     axisLine={false}
                                                     tickLine={false}
                                                     className="text-xs text-gray-500"
@@ -886,7 +883,7 @@ export default function UsagePage() {
                                                                 percent
                                                             }) => `${provider} (${(percent * 100).toFixed(0)}%)`}
                                                     outerRadius={100}
-                                                    innerRadius={60} // Donut chart
+                                                    innerRadius={60}
                                                     paddingAngle={2}
                                                     dataKey="cost"
                                                     nameKey="provider"
@@ -939,7 +936,7 @@ export default function UsagePage() {
                                                                 percent
                                                             }) => `${name} (${(percent * 100).toFixed(0)}%)`}
                                                     outerRadius={100}
-                                                    innerRadius={60} // Donut chart
+                                                    innerRadius={60}
                                                     paddingAngle={2}
                                                     fill="#8884d8"
                                                     dataKey="value"

@@ -314,47 +314,6 @@ export const CostForecast: React.FC<CostForecastProps> = ({
                     </p>
                 </div>
             </Card>
-
-            {summary && (
-                <Card className="p-6">
-                    <h4 className="text-lg font-medium text-gray-900 mb-4">Recommendations</h4>
-                    <div className="space-y-3">
-                        {summary.riskLevel === 'high' && (
-                            <div className="flex items-start gap-3 p-3 bg-red-50 rounded-lg">
-                                <AlertTriangle className="h-5 w-5 text-red-500 mt-0.5" />
-                                <div>
-                                    <p className="font-medium text-red-800">Set Spending Limits</p>
-                                    <p className="text-sm text-red-700">
-                                        Configure daily or monthly spending limits with kill switches to prevent unexpected charges.
-                                    </p>
-                                </div>
-                            </div>
-                        )}
-
-                        {summary.trend === 'up' && (
-                            <div className="flex items-start gap-3 p-3 bg-yellow-50 rounded-lg">
-                                <TrendingUp className="h-5 w-5 text-yellow-500 mt-0.5" />
-                                <div>
-                                    <p className="font-medium text-yellow-800">Monitor Usage Patterns</p>
-                                    <p className="text-sm text-yellow-700">
-                                        Review your recent API calls and model usage to identify any unusual spikes in activity.
-                                    </p>
-                                </div>
-                            </div>
-                        )}
-
-                        <div className="flex items-start gap-3 p-3 bg-blue-50 rounded-lg">
-                            <div className="h-5 w-5 bg-blue-500 rounded mt-0.5" />
-                            <div>
-                                <p className="font-medium text-blue-800">Enable Auto-Optimization</p>
-                                <p className="text-sm text-blue-700">
-                                    Use model fallback chains and caching to optimize costs while maintaining performance.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                </Card>
-            )}
         </div>
     );
 };

@@ -1,505 +1,342 @@
 'use client';
-
-import { useState, useEffect } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-    DialogTrigger,
-} from '@/components/ui/dialog';
+import {useState, useEffect, FC, useCallback} from 'react';
+import {toast} from 'sonner';
+import {useRouter} from 'next/navigation';
+import {Project, ProjectRole} from '@prisma/client';
+import {formatDistanceToNow} from 'date-fns';
+import {useProjectPermissions} from '@/hooks/useProjectPermissions';
+import {Button} from '@/components/ui/button';
+import { DollarSign, AlertTriangle, Loader2 } from 'lucide-react';
 import {
     AlertDialog,
     AlertDialogAction,
     AlertDialogCancel,
     AlertDialogContent,
+    AlertDialogTrigger,
     AlertDialogDescription,
     AlertDialogFooter,
     AlertDialogHeader,
-    AlertDialogTitle,
-    AlertDialogTrigger,
+    AlertDialogTitle
 } from '@/components/ui/alert-dialog';
-import {
-    Card,
-    CardContent,
-    CardDescription,
-    CardHeader,
-    CardTitle,
-} from '@/components/ui/card';
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Progress } from '@/components/ui/progress';
-import {
-    FolderOpen,
-    MoreVertical,
-    Settings,
-    Trash2,
-    Key,
-    Link,
-    TrendingUp,
-    AlertCircle,
-    Plus,
-    Edit,
-} from 'lucide-react';
-import { toast } from 'sonner';
-import { useRouter } from 'next/navigation';
+import {Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle} from '@/components/ui/card';
+import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs";
+import {Skeleton} from '@/components/ui/skeleton';
+import {Badge} from '@/components/ui/badge';
+import {Tooltip, TooltipContent, TooltipProvider, TooltipTrigger} from '@/components/ui/tooltip';
+import {ScrollArea} from '@/components/ui/scroll-area';
+import {ProviderIcon} from '@/components/ui/provider-icon';
+import {CreateEditProjectModal} from '@/components/dashboard/projects/CreateEditProjectModal';
+import {ManageMembersModal} from '@/components/dashboard/projects/ManageMembersModal';
+import {Key, Users, Plus, Edit, Trash2, Cpu, Braces, Tag, BarChart3} from 'lucide-react';
 
-interface Project {
+interface ModelInfo {
     id: string;
     name: string;
-    description?: string;
-    spendingLimit?: number;
-    createdAt: string;
-    updatedAt: string;
-    _count?: {
-        apiKeys: number;
-        modelChains: number;
-    };
-    currentSpend?: number;
+    provider: string;
 }
+
+type ProjectDataFromAPI = Project & {
+    _count: { apiKeys: number; fallbackChains: number; members: number; };
+    userRole: ProjectRole;
+    owner: { id: string; name: string | null; };
+};
+
+interface ProjectData {
+    owned: ProjectDataFromAPI[];
+    memberOf: ProjectDataFromAPI[];
+}
+
+const DetailItem: FC<{ icon: React.ElementType; label: string; children: React.ReactNode }> = ({
+                                                                                                   icon: Icon,
+                                                                                                   label,
+                                                                                                   children
+                                                                                               }) => (
+    <div>
+        <div className="flex items-center text-sm font-medium text-muted-foreground mb-2"><Icon
+            className="w-4 h-4 mr-2"/><span>{label}</span></div>
+        <div className="pl-6">{children}</div>
+    </div>
+);
 
 export default function ProjectsPage() {
     const router = useRouter();
-    const [projects, setProjects] = useState<Project[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [createDialogOpen, setCreateDialogOpen] = useState(false);
-    const [editingProject, setEditingProject] = useState<Project | null>(null);
+    const [projectData, setProjectData] = useState<ProjectData>({owned: [], memberOf: []});
+    const [allModels, setAllModels] = useState<ModelInfo[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [createEditModalOpen, setCreateEditModalOpen] = useState(false);
+    const [editingProject, setEditingProject] = useState<ProjectDataFromAPI | null>(null);
+    const [manageMembersModalOpen, setManageMembersModalOpen] = useState(false);
+    const [managingMembersProject, setManagingMembersProject] = useState<ProjectDataFromAPI | null>(null);
+    const [projectUsageData, setProjectUsageData] = useState<Record<string, any>>({});
+    const [loadingUsage, setLoadingUsage] = useState<Record<string, boolean>>({});
 
-    const [formData, setFormData] = useState({
-        name: '',
-        description: '',
-        spendingLimit: '',
-    });
+    const fetchProjectUsage = async (projectId: string) => {
+        setLoadingUsage(prev => ({ ...prev, [projectId]: true }));
+        try {
+            const res = await fetch(`/api/projects/${projectId}/stats?days=30`);
+            if (!res.ok) throw new Error('Failed to fetch stats');
+            const data = await res.json();
+            setProjectUsageData(prev => ({
+                ...prev,
+                [projectId]: {
+                    totalSpent: data.overview.totalSpent,
+                    totalSpendingLimit: data.overview.totalSpendingLimit,
+                    percentageUsed: data.overview.percentageOfLimit,
+                    limitExceeded: data.overview.spendingLimitExceeded
+                }
+            }));
+        } catch (error) {
+            console.error(`Failed to fetch stats for project ${projectId}:`, error);
+        } finally {
+            setLoadingUsage(prev => ({ ...prev, [projectId]: false }));
+        }
+    };
 
-    useEffect(() => {
-        fetchProjects();
+    const fetchData = useCallback(async () => {
+        setIsLoading(true);
+        try {
+            const [projectsRes, modelsRes] = await Promise.all([fetch('/api/projects'), fetch('/api/models')]);
+            if (!projectsRes.ok) throw new Error('Failed to fetch projects');
+            if (!modelsRes.ok) throw new Error('Failed to fetch models');
+            const projects = await projectsRes.json();
+            const modelProviders = await modelsRes.json();
+
+            const flattenedModels = modelProviders.flatMap((p: any) => p.models.map((m: any) => ({
+                ...m,
+                provider: p.providerId
+            })));
+            setProjectData(projects);
+            setAllModels(flattenedModels);
+
+            const allProjects = [...projects.owned, ...projects.memberOf];
+            allProjects.forEach(project => {
+                if (project.totalSpendingLimit !== null) {
+                    fetchProjectUsage(project.id);
+                }
+            });
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'An error occurred while loading data');
+        } finally {
+            setIsLoading(false);
+        }
     }, []);
 
-    const fetchProjects = async () => {
-        try {
-            const response = await fetch('/api/projects');
-            const data = await response.json();
+    useEffect(() => {
+        fetchData();
+    }, [fetchData]);
 
-            if (Array.isArray(data)) {
-                setProjects(data);
-            } else {
-                setProjects([]);
-
-                toast.error('Unexpected response format from server');
-            }
-        } catch (error) {
-
-            toast.error('Failed to fetch projects');
-            setProjects([]);
-        } finally {
-            setLoading(false);
-        }
+    const handleOpenCreateModal = () => {
+        setEditingProject(null);
+        setCreateEditModalOpen(true);
     };
-
-    const handleCreateProject = async () => {
-        try {
-            const response = await fetch('/api/projects', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: formData.name,
-                    description: formData.description || undefined,
-                    spendingLimit: formData.spendingLimit
-                        ? parseFloat(formData.spendingLimit)
-                        : undefined,
-                }),
-            });
-
-            if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.error || 'Failed to create project');
-            }
-
-            const newProject = await response.json();
-            setProjects([newProject, ...projects]);
-            setCreateDialogOpen(false);
-            resetForm();
-
-            toast.success('Project created successfully');
-        } catch (error) {
-
-            toast.error('Failed to create project');
-        }
+    const handleOpenEditModal = (project: ProjectDataFromAPI) => {
+        setEditingProject(project);
+        setCreateEditModalOpen(true);
     };
-
-    const handleUpdateProject = async () => {
-        if (!editingProject) return;
-
-        try {
-            const response = await fetch(`/api/projects/${editingProject.id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: formData.name,
-                    description: formData.description || undefined,
-                    spendingLimit: formData.spendingLimit
-                        ? parseFloat(formData.spendingLimit)
-                        : undefined,
-                }),
-            });
-
-            if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.error || 'Failed to update project');
-            }
-
-            const updatedProject = await response.json();
-            setProjects(projects.map((p) => (p.id === editingProject.id ? updatedProject : p)));
-            setEditingProject(null);
-            resetForm();
-
-            toast.success('Project updated successfully');
-        } catch (error) {
-            toast.error('Failed to update project');
-        }
+    const handleOpenMembersModal = (project: ProjectDataFromAPI) => {
+        setManagingMembersProject(project);
+        setManageMembersModalOpen(true);
     };
 
     const handleDeleteProject = async (projectId: string) => {
+        const toastId = toast.loading('Deleting project...');
         try {
-            const response = await fetch(`/api/projects/${projectId}`, {
-                method: 'DELETE',
-            });
-
-            if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.error || 'Failed to delete project');
-            }
-
-            setProjects(projects.filter((p) => p.id !== projectId));
-            toast.success('Project deleted successfully');
-        } catch (error) {
-            toast.error('Failed to delete project' + error);
+            const response = await fetch(`/api/projects/${projectId}`, {method: 'DELETE'});
+            if (!response.ok) throw new Error((await response.json()).error || 'Failed to delete project');
+            toast.success('Project deleted successfully', {id: toastId});
+            fetchData();
+        } catch (err) {
+            toast.error('Deletion failed', {id: toastId, description: err instanceof Error ? err.message : ''});
         }
     };
+    const UsageProgressBar: FC<{
+        current: number;
+        limit: number | null;
+        projectId: string;
+    }> = ({ current, limit, projectId }) => {
+        if (limit === null) return null;
 
-    const openEditDialog = (project: Project) => {
-        setEditingProject(project);
-        setFormData({
-            name: project.name,
-            description: project.description || '',
-            spendingLimit: project.spendingLimit?.toString() || '',
-        });
+        const percentage = Math.min((current / limit) * 100, 100);
+        const remaining = Math.max(limit - current, 0);
+        const isExceeded = current >= limit;
+
+        const colorClass = isExceeded
+            ? 'bg-red-500'
+            : percentage > 80
+                ? 'bg-yellow-500'
+                : 'bg-green-500';
+
+        const bgClass = isExceeded
+            ? 'bg-red-100 dark:bg-red-950'
+            : percentage > 80
+                ? 'bg-yellow-100 dark:bg-yellow-950'
+                : 'bg-gray-100 dark:bg-gray-800';
+
+        return (
+            <div className="w-full space-y-1">
+                <div className="flex justify-between items-center text-sm">
+                <span className="text-muted-foreground flex items-center gap-1">
+                    <DollarSign className="w-3 h-3" />
+                    Spending Limit
+                </span>
+                    <div className="flex items-center gap-2">
+                        {isExceeded && (
+                            <TooltipProvider>
+                                <Tooltip>
+                                    <TooltipTrigger>
+                                        <AlertTriangle className="w-4 h-4 text-red-500" />
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                        <p>Spending limit exceeded</p>
+                                    </TooltipContent>
+                                </Tooltip>
+                            </TooltipProvider>
+                        )}
+                        <span className={`font-medium ${isExceeded ? 'text-red-600' : ''}`}>
+                        ${current.toFixed(2)} / ${limit.toFixed(2)}
+                    </span>
+                        {loadingUsage[projectId] && <Loader2 className="w-3 h-3 animate-spin" />}
+                    </div>
+                </div>
+                <div className={`w-full h-2 rounded-full ${bgClass} overflow-hidden`}>
+                    <div
+                        className={`h-full ${colorClass} transition-all duration-300 ease-out`}
+                        style={{ width: `${percentage}%` }}
+                    />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                    {isExceeded
+                        ? `Exceeded by $${(current - limit).toFixed(2)}`
+                        : `$${remaining.toFixed(2)} remaining`}
+                </p>
+            </div>
+        );
+    };
+    const ProjectCard: FC<{ project: ProjectDataFromAPI }> = ({project}) => {
+        const {can} = useProjectPermissions(project.userRole);
+        const modelsToShow = project.allowedModels.length > 0 ? allModels.filter(m => project.allowedModels.includes(m.id)) : [];
+
+        return (
+            <Card
+                className="flex flex-col h-full bg-card/80 backdrop-blur-sm border-border/20 shadow-sm hover:shadow-lg hover:-translate-y-1 transition-all duration-300">
+                <CardHeader className="flex flex-row justify-between items-start">
+                    <div>
+                        <div
+                            className="cursor-pointer"
+                            onClick={() => router.push(`/dashboard/projects/${project.id}/settings`)}
+                        >
+                            <CardTitle className="text-lg tracking-tight">
+                                {project.name}
+                            </CardTitle>
+                        </div>
+                        <CardDescription>Updated {formatDistanceToNow(new Date(project.updatedAt), {addSuffix: true})}</CardDescription>
+                    </div>
+                    <Badge variant={project.userRole === 'OWNER' ? "success" : "secondary"}>
+                        {project.userRole}
+                    </Badge>
+                </CardHeader>
+                <CardContent className="flex-grow space-y-5">
+                    <p className="text-sm text-muted-foreground h-10 line-clamp-2">{project.description || 'No description provided.'}</p>
+                    <div className="flex flex-wrap gap-1.5">{project.tags.slice(0, 4).map(tag => <Badge key={tag}
+                                                                                                        variant="outline"
+                                                                                                        className="font-normal"><Tag
+                        className="w-3 h-3 mr-1"/>{tag}</Badge>)}</div>
+                    <div className="border-t border-border/20"></div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
+                        <DetailItem icon={Users} label="Team"><span
+                            className="font-semibold">{project._count.members}</span> member(s)</DetailItem>
+                        <DetailItem icon={Key} label="Access"><span
+                            className="font-semibold">{project._count.apiKeys}</span> API key(s)</DetailItem>
+                        <div className="md:col-span-2">
+                            <DetailItem icon={Cpu} label="Model Access">
+                                <ScrollArea className="h-24 pr-4">
+                                    <div className="flex flex-col space-y-2">
+                                        {modelsToShow.length > 0 ? modelsToShow.map(m => (
+                                            <div key={m.id} className="flex items-center text-sm"><ProviderIcon
+                                                provider={m.provider} className="w-4 h-4 mr-2"/><span
+                                                className="truncate">{m.name}</span></div>
+                                        )) : <div className="text-sm text-muted-foreground">All models allowed.</div>}
+                                    </div>
+                                </ScrollArea>
+                            </DetailItem>
+                        </div>
+                    </div>
+                    {project.totalSpendingLimit !== null && projectUsageData[project.id] && (
+                        <div className="pt-2">
+                            <UsageProgressBar
+                                current={projectUsageData[project.id].totalSpent}
+                                limit={project.totalSpendingLimit}
+                                projectId={project.id}
+                            />
+                        </div>
+                    )}
+                </CardContent>
+                <CardFooter className="flex items-center justify-end bg-muted/50 border-t border-border/20 p-2">
+                    <TooltipProvider delayDuration={100}>
+                        <div className="flex items-center space-x-1">
+                            {can('members:read') && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon"
+                                                                                             onClick={() => handleOpenMembersModal(project)}><Users
+                                className="w-4 h-4"/></Button></TooltipTrigger><TooltipContent>Manage
+                                Members</TooltipContent></Tooltip>}
+                            {can('api-keys:read') &&
+                                <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon"
+                                                                         onClick={() => router.push(`/dashboard/projects/${project.id}/keys`)}><Key
+                                    className="w-4 h-4"/></Button></TooltipTrigger><TooltipContent>Manage API
+                                    Keys</TooltipContent></Tooltip>}
+                            {can('usage:read') && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon"
+                                                                                           onClick={() => router.push(`/dashboard/projects/${project.id}/usage`)}><BarChart3
+                                className="w-4 h-4"/></Button></TooltipTrigger><TooltipContent>View
+                                Usage</TooltipContent></Tooltip>}
+                            {can('project:update') &&
+                                <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon"
+                                                                         onClick={() => handleOpenEditModal(project)}><Edit
+                                    className="w-4 h-4"/></Button></TooltipTrigger><TooltipContent>Edit
+                                    Settings</TooltipContent></Tooltip>}
+                            {can('project:delete') &&
+                                <Tooltip><TooltipTrigger asChild><AlertDialog><AlertDialogTrigger asChild><Button
+                                    variant="ghost" size="icon"
+                                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"><Trash2
+                                    className="w-4 h-4"/></Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete
+                                    "{project.name}"?</AlertDialogTitle></AlertDialogHeader><AlertDialogDescription>This
+                                    action cannot be undone and will permanently delete all associated
+                                    data.</AlertDialogDescription><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction
+                                    onClick={() => handleDeleteProject(project.id)}
+                                    className="bg-destructive hover:bg-destructive/90">Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog></TooltipTrigger><TooltipContent>Delete
+                                    Project</TooltipContent></Tooltip>}
+                        </div>
+                    </TooltipProvider>
+                </CardFooter>
+            </Card>
+        );
     };
 
-    const resetForm = () => {
-        setFormData({
-            name: '',
-            description: '',
-            spendingLimit: '',
-        });
+    const renderProjectGrid = (projects: ProjectDataFromAPI[]) => {
+        if (isLoading) return <div
+            className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{Array.from({length: 4}).map((_, i) =>
+            <Skeleton key={i} className="h-[28rem] w-full"/>)}</div>;
+        if (!projects.length) return <div className="text-center py-16"><Braces
+            className="w-16 h-16 text-muted-foreground mx-auto mb-4"/><h3 className="text-xl font-semibold">No Projects
+            Here</h3><p className="text-muted-foreground">Get started by creating a new project.</p></div>;
+        return <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{projects.map(p => <ProjectCard
+            key={p.id} project={p}/>)}</div>;
     };
-
-    const formatDate = (dateString: string) => {
-        return new Date(dateString).toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric',
-        });
-    };
-
-    const calculateSpendingProgress = (currentSpend?: number, limit?: number) => {
-        if (!limit || !currentSpend) return 0;
-        return Math.min((currentSpend / limit) * 100, 100);
-    };
-
-    if (loading) {
-        return <div className="flex justify-center items-center h-64">Loading...</div>;
-    }
 
     return (
         <div className="space-y-6">
             <div className="flex justify-between items-center">
-                <div>
-                    <h1 className="text-2xl font-bold text-gray-900">Projects</h1>
-                    <p className="mt-1 text-sm text-gray-600">
-                        Organize your API usage and configurations by project
-                    </p>
-                </div>
-                <Dialog
-                    open={createDialogOpen || !!editingProject}
-                    onOpenChange={(open) => {
-                        if (!open) {
-                            setCreateDialogOpen(false);
-                            setEditingProject(null);
-                            resetForm();
-                        } else {
-                            setCreateDialogOpen(true);
-                        }
-                    }}
-                >
-                    <DialogTrigger asChild>
-                        <Button>
-                            <Plus className="w-4 h-4 mr-2" />
-                            New Project
-                        </Button>
-                    </DialogTrigger>
-                    <DialogContent>
-                        <DialogHeader>
-                            <DialogTitle>
-                                {editingProject ? 'Edit Project' : 'Create New Project'}
-                            </DialogTitle>
-                            <DialogDescription>
-                                {editingProject
-                                    ? 'Update your project details'
-                                    : 'Set up a new project to organize your API usage'}
-                            </DialogDescription>
-                        </DialogHeader>
-
-                        <div className="space-y-4">
-                            <div>
-                                <Label htmlFor="name">Project Name</Label>
-                                <Input
-                                    id="name"
-                                    value={formData.name}
-                                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                                    placeholder="My AI Project"
-                                />
-                            </div>
-
-                            <div>
-                                <Label htmlFor="description">Description (Optional)</Label>
-                                <Textarea
-                                    id="description"
-                                    value={formData.description}
-                                    onChange={(e) =>
-                                        setFormData({ ...formData, description: e.target.value })
-                                    }
-                                    placeholder="Describe your project..."
-                                    rows={3}
-                                />
-                            </div>
-
-                            <div>
-                                <Label htmlFor="spendingLimit">Monthly Spending Limit ($)</Label>
-                                <Input
-                                    id="spendingLimit"
-                                    type="number"
-                                    value={formData.spendingLimit}
-                                    onChange={(e) =>
-                                        setFormData({ ...formData, spendingLimit: e.target.value })
-                                    }
-                                    placeholder="1000"
-                                />
-                                <p className="text-sm text-gray-500 mt-1">
-                                    Leave empty for unlimited spending
-                                </p>
-                            </div>
-                        </div>
-
-                        <DialogFooter>
-                            <Button
-                                variant="outline"
-                                onClick={() => {
-                                    setCreateDialogOpen(false);
-                                    setEditingProject(null);
-                                    resetForm();
-                                }}
-                            >
-                                Cancel
-                            </Button>
-                            <Button onClick={editingProject ? handleUpdateProject : handleCreateProject}>
-                                {editingProject ? 'Update' : 'Create'} Project
-                            </Button>
-                        </DialogFooter>
-                    </DialogContent>
-                </Dialog>
+                <h1 className="text-3xl font-bold tracking-tight">Projects</h1>
+                <Button onClick={handleOpenCreateModal}><Plus className="w-4 h-4 mr-2"/>New Project</Button>
             </div>
-
-            <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                {projects.map((project) => (
-                    <Card key={project.id} className="relative overflow-hidden">
-                        <CardHeader>
-                            <div className="flex justify-between items-start">
-                                <div className="space-y-1">
-                                    <CardTitle className="text-lg">{project.name}</CardTitle>
-                                    {project.description && (
-                                        <CardDescription className="text-sm">
-                                            {project.description}
-                                        </CardDescription>
-                                    )}
-                                </div>
-                                <DropdownMenu>
-                                    <DropdownMenuTrigger asChild>
-                                        <Button variant="ghost" size="sm">
-                                            <MoreVertical className="w-4 h-4" />
-                                        </Button>
-                                    </DropdownMenuTrigger>
-                                    <DropdownMenuContent align="end">
-                                        <DropdownMenuItem
-                                            onClick={() => router.push(`/projects/${project.id}`)}
-                                        >
-                                            <Settings className="w-4 h-4 mr-2" />
-                                            View Details
-                                        </DropdownMenuItem>
-                                        <DropdownMenuItem onClick={() => openEditDialog(project)}>
-                                            <Edit className="w-4 h-4 mr-2" />
-                                            Edit Project
-                                        </DropdownMenuItem>
-                                        <DropdownMenuItem
-                                            onClick={() => router.push(`/projects/${project.id}/api-keys`)}
-                                        >
-                                            <Key className="w-4 h-4 mr-2" />
-                                            API Keys
-                                        </DropdownMenuItem>
-                                        <DropdownMenuItem
-                                            onClick={() => router.push(`/projects/${project.id}/model-chains`)}
-                                        >
-                                            <Link className="w-4 h-4 mr-2" />
-                                            Model Chains
-                                        </DropdownMenuItem>
-                                        <AlertDialog>
-                                            <AlertDialogTrigger asChild>
-                                                <DropdownMenuItem
-                                                    onSelect={(e) => e.preventDefault()}
-                                                    className="text-destructive"
-                                                >
-                                                    <Trash2 className="w-4 h-4 mr-2" />
-                                                    Delete Project
-                                                </DropdownMenuItem>
-                                            </AlertDialogTrigger>
-                                            <AlertDialogContent>
-                                                <AlertDialogHeader>
-                                                    <AlertDialogTitle>Delete Project</AlertDialogTitle>
-                                                    <AlertDialogDescription>
-                                                        This action cannot be undone. This will permanently delete the
-                                                        project and all associated data including API keys, model
-                                                        chains, and usage history.
-                                                    </AlertDialogDescription>
-                                                </AlertDialogHeader>
-                                                <AlertDialogFooter>
-                                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                                    <AlertDialogAction
-                                                        onClick={() => handleDeleteProject(project.id)}
-                                                        className="bg-destructive text-destructive-foreground"
-                                                    >
-                                                        Delete Project
-                                                    </AlertDialogAction>
-                                                </AlertDialogFooter>
-                                            </AlertDialogContent>
-                                        </AlertDialog>
-                                    </DropdownMenuContent>
-                                </DropdownMenu>
-                            </div>
-                        </CardHeader>
-
-                        <CardContent className="space-y-4">
-                            <div className="grid grid-cols-3 gap-4 text-center">
-                                <div>
-                                    <p className="text-2xl font-semibold">
-                                        {project._count?.apiKeys || 0}
-                                    </p>
-                                    <p className="text-xs text-gray-500">API Keys</p>
-                                </div>
-                                <div>
-                                    <p className="text-2xl font-semibold">
-                                        {project._count?.modelChains || 0}
-                                    </p>
-                                    <p className="text-xs text-gray-500">Model Chains</p>
-                                </div>
-                            </div>
-
-                            {project.spendingLimit && (
-                                <div className="space-y-2">
-                                    <div className="flex justify-between items-center text-sm">
-                                        <span className="text-gray-500">Monthly Spending</span>
-                                        <span className="font-medium">
-                      ${project.currentSpend?.toFixed(2) || '0.00'} / ${project.spendingLimit}
-                    </span>
-                                    </div>
-                                    <Progress
-                                        value={calculateSpendingProgress(project.currentSpend, project.spendingLimit)}
-                                        className="h-2"
-                                    />
-                                    {project.currentSpend && project.spendingLimit &&
-                                        project.currentSpend > project.spendingLimit * 0.8 && (
-                                            <div className="flex items-center gap-1 text-xs text-amber-600">
-                                                <AlertCircle className="w-3 h-3" />
-                                                <span>Approaching spending limit</span>
-                                            </div>
-                                        )}
-                                </div>
-                            )}
-
-                            <div className="flex items-center justify-between pt-2 text-xs text-gray-500">
-                                <span>Created {formatDate(project.createdAt)}</span>
-                                <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => router.push(`/projects/${project.id}`)}
-                                >
-                                    View Details
-                                    <TrendingUp className="w-3 h-3 ml-1" />
-                                </Button>
-                            </div>
-                        </CardContent>
-                    </Card>
-                ))}
-
-                {projects.length === 0 && (
-                    <Card className="border-dashed">
-                        <CardContent className="flex flex-col items-center justify-center py-8">
-                            <FolderOpen className="w-12 h-12 text-gray-400 mb-4" />
-                            <h3 className="text-lg font-medium text-gray-900 mb-1">No projects yet</h3>
-                            <p className="text-sm text-gray-500 mb-4">
-                                Create your first project to get started
-                            </p>
-                            <Button onClick={() => setCreateDialogOpen(true)}>
-                                <Plus className="w-4 h-4 mr-2" />
-                                Create Project
-                            </Button>
-                        </CardContent>
-                    </Card>
-                )}
-            </div>
-
-            {projects.length > 0 && (
-                <Card>
-                    <CardHeader>
-                        <CardTitle className="text-base">Summary</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <div>
-                                <p className="text-sm text-gray-500">Total Projects</p>
-                                <p className="text-2xl font-semibold">{projects.length}</p>
-                            </div>
-                            <div>
-                                <p className="text-sm text-gray-500">Total API Keys</p>
-                                <p className="text-2xl font-semibold">
-                                    {projects.reduce((acc, p) => acc + (p._count?.apiKeys || 0), 0)}
-                                </p>
-                            </div>
-                            <div>
-                                <p className="text-sm text-gray-500">Total Model Chains</p>
-                                <p className="text-2xl font-semibold">
-                                    {projects.reduce((acc, p) => acc + (p._count?.modelChains || 0), 0)}
-                                </p>
-                            </div>
-                            <div>
-                                <p className="text-sm text-gray-500">Total Monthly Spend</p>
-                                <p className="text-2xl font-semibold">
-                                    ${projects.reduce((acc, p) => acc + (p.currentSpend || 0), 0).toFixed(2)}
-                                </p>
-                            </div>
-                        </div>
-                    </CardContent>
-                </Card>
-            )}
+            <Tabs defaultValue="owned" className="w-full">
+                <TabsList className="grid w-full grid-cols-2"><TabsTrigger value="owned">Owned by
+                    me</TabsTrigger><TabsTrigger value="memberOf">Shared with me</TabsTrigger></TabsList>
+                <TabsContent value="owned" className="mt-6">{renderProjectGrid(projectData.owned)}</TabsContent>
+                <TabsContent value="memberOf" className="mt-6">{renderProjectGrid(projectData.memberOf)}</TabsContent>
+            </Tabs>
+            <CreateEditProjectModal project={editingProject} isOpen={createEditModalOpen}
+                                    onClose={() => setCreateEditModalOpen(false)} onSaveSuccess={fetchData}/>
+            <ManageMembersModal project={managingMembersProject} isOpen={manageMembersModalOpen}
+                                onClose={() => setManageMembersModalOpen(false)} onUpdate={fetchData}/>
         </div>
     );
 }

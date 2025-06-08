@@ -13,9 +13,9 @@ export async function GET(request: NextRequest) {
         const user = await prisma.user.findUnique({
             where: { email: session.user.email },
             include: {
-                projects: {
+                ownedProjects: {
                     where: {
-                        spendingLimit: {
+                        totalSpendingLimit: {
                             not: null,
                         },
                     },
@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
         }
 
         const limits = await Promise.all(
-            user.projects.map(async (project) => {
+            user.ownedProjects.map(async (project) => {
                 const now = new Date();
                 const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
                     type: 'project' as const,
                     projectId: project.id,
                     projectName: project.name,
-                    limit: project.spendingLimit!,
+                    limit: project.totalSpendingLimit!,
                     period: 'monthly' as const,
                     currentSpend: usage._sum.totalCost || 0,
                 };
@@ -84,10 +84,10 @@ export async function POST(request: NextRequest) {
             const project = await prisma.project.update({
                 where: {
                     id: projectId,
-                    userId: user.id,
+                    ownerId: user.id,
                 },
                 data: {
-                    spendingLimit: limit,
+                    totalSpendingLimit: limit,
                 },
             });
 

@@ -7,7 +7,6 @@ import axios from 'axios';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
-    Mail,
     Shield,
     ArrowRight,
     Loader2,
@@ -16,7 +15,8 @@ import {
     Zap,
     Globe,
     BarChart3,
-    Sparkles
+    Sparkles,
+    ClipboardPaste
 } from 'lucide-react';
 
 const features = [
@@ -92,7 +92,7 @@ export default function VerifyPage() {
         if (value.length > 1) return;
 
         const newCode = [...code];
-        newCode[index] = value;
+        newCode[index] = value.toUpperCase();
         setCode(newCode);
 
         if (value && index < 5) {
@@ -107,6 +107,32 @@ export default function VerifyPage() {
     const handleKeyDown = (index: number, e: React.KeyboardEvent) => {
         if (e.key === 'Backspace' && !code[index] && index > 0) {
             inputRefs.current[index - 1]?.focus();
+        }
+    };
+
+    const processPastedText = (text: string) => {
+        const sanitizedText = text.trim().slice(0, 6);
+        if (sanitizedText.length === 6) {
+            const newCode = sanitizedText.toUpperCase().split('');
+            setCode(newCode);
+            inputRefs.current[5]?.focus();
+            handleSubmit(newCode.join(''));
+        }
+    };
+
+    const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+        e.preventDefault();
+        const pastedText = e.clipboardData.getData('text');
+        processPastedText(pastedText);
+    };
+
+    const handlePasteButtonClick = async () => {
+        try {
+            const text = await navigator.clipboard.readText();
+            processPastedText(text);
+        } catch (err) {
+            console.error('Failed to read clipboard contents: ', err);
+            setError("Clipboard access denied. Please paste the code or type it manually.");
         }
     };
 
@@ -157,7 +183,6 @@ export default function VerifyPage() {
 
     return (
         <div className="min-h-screen flex flex-col lg:flex-row overflow-hidden bg-gray-50">
-            {}
             <motion.div
                 initial={{ opacity: 0, x: -50 }}
                 animate={{ opacity: 1, x: 0 }}
@@ -312,15 +337,29 @@ export default function VerifyPage() {
                                                 <Input
                                                     ref={el => { inputRefs.current[index] = el }}
                                                     type="text"
-                                                    inputMode="numeric"
+                                                    inputMode="text"
                                                     maxLength={1}
                                                     value={digit}
                                                     onChange={(e) => handleCodeChange(index, e.target.value)}
                                                     onKeyDown={(e) => handleKeyDown(index, e)}
+                                                    onPaste={handlePaste}
                                                     className="w-12 h-12 text-center text-xl font-semibold bg-gray-50 border-gray-200/50 focus:bg-white focus:border-blue-500 transition-all duration-200"
+                                                    style={{ textTransform: 'uppercase' }}
                                                 />
                                             </motion.div>
                                         ))}
+                                    </div>
+
+                                    <div className="text-center mt-4">
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            onClick={handlePasteButtonClick}
+                                            className="text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                                        >
+                                            <ClipboardPaste className="w-4 h-4 mr-2" />
+                                            Paste Code
+                                        </Button>
                                     </div>
                                 </div>
 
