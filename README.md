@@ -181,7 +181,7 @@ The long-term vision for UniAI is to evolve from a gateway into a complete AI pl
 
 - **Expanded Provider Support**: Integration with more providers like Cohere, Mistral, and Replicate.
 
-For a detailed overview, see the Roadmap chapter in the Bachelor's Thesis document (consider uploading it and linking it here).
+For a detailed overview, see the Roadmap chapter in the Bachelor's Thesis document.
 
 ## 📄 License
 
